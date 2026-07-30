@@ -1,0 +1,44 @@
+{
+  "name": "bedrock-quota-increase",
+  "version": "1.0.0",
+  "description": "Fan out Amazon Bedrock model quota-increase requests across many AWS accounts via AWS Support, with run tagging so the cases can be listed, commented on, or closed later.",
+  "type": "module",
+  "bin": {
+    "bqi": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
+    "start": "node --loader ts-node/esm src/cli.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock": "^3.1097.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.1097.0",
+    "@aws-sdk/client-organizations": "^3.1098.0",
+    "@aws-sdk/client-service-quotas": "^3.1098.0",
+    "@aws-sdk/client-sso": "^3.600.0",
+    "@aws-sdk/client-sso-oidc": "^3.600.0",
+    "@aws-sdk/client-support": "^3.600.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0"
+  },
+  "license": "MIT-0",
+  "keywords": [
+    "aws",
+    "bedrock",
+    "quota",
+    "service-limit-increase",
+    "support",
+    "sso"
+  ]
+}
