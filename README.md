@@ -19,7 +19,7 @@ command. For each account the tool:
 > raise the quota across your accounts.
 
 ```bash
-npx github:aws-samples/bedrock-quota-increase \
+npx github:aws-samples/sample-multi-account-bedrock-quota-increase \
   --start-url https://my-org.awsapps.com/start \
   --accounts 111111111111,222222222222,333333333333 \
   --llm global.anthropic.claude-opus-4-8 \
@@ -33,7 +33,7 @@ required. For a longer justification, keep it in a Markdown file and pass it
 with `--body-file`:
 
 ```bash
-npx github:aws-samples/bedrock-quota-increase \
+npx github:aws-samples/sample-multi-account-bedrock-quota-increase \
   --start-url https://my-org.awsapps.com/start \
   --accounts 111111111111,222222222222 \
   --llm global.anthropic.claude-opus-4-8 \
@@ -65,7 +65,7 @@ Only **ACTIVE** accounts are targeted.
 **Select every account under an OU** (nested OUs included):
 
 ```bash
-npx github:aws-samples/bedrock-quota-increase \
+npx github:aws-samples/sample-multi-account-bedrock-quota-increase \
   --start-url https://my-org.awsapps.com/start \
   --org-account 999999999999 \
   --ou ou-abcd-11111111 \
@@ -79,7 +79,7 @@ your organization's OUs (with their full path, e.g. `Root / Workloads / Prod`)
 and lets you choose one with the **arrow keys** (↑/↓, Enter to select):
 
 ```bash
-npx github:aws-samples/bedrock-quota-increase \
+npx github:aws-samples/sample-multi-account-bedrock-quota-increase \
   --start-url https://my-org.awsapps.com/start \
   --org-account 999999999999 \
   --ou \
@@ -92,7 +92,7 @@ npx github:aws-samples/bedrock-quota-increase \
 `Key=Value` tags:
 
 ```bash
-npx github:aws-samples/bedrock-quota-increase \
+npx github:aws-samples/sample-multi-account-bedrock-quota-increase \
   --start-url https://my-org.awsapps.com/start \
   --org-account 999999999999 \
   --tag team=ml,env=prod \
@@ -182,7 +182,7 @@ model-inference limits:
 | `close`   | Resolve (close) every case in a run                            |
 | `runs`    | List runs recorded on this machine                             |
 
-Run `npx github:aws-samples/bedrock-quota-increase --help` for all options.
+Run `npx github:aws-samples/sample-multi-account-bedrock-quota-increase --help` for all options.
 
 ### `request`
 
@@ -213,7 +213,7 @@ On success the run ID is printed to **stdout** (all human logs go to stderr), so
 you can capture it in a script:
 
 ```bash
-RUN_ID=$(npx github:aws-samples/bedrock-quota-increase \
+RUN_ID=$(npx github:aws-samples/sample-multi-account-bedrock-quota-increase \
   --start-url "$URL" --accounts "$ACCTS" --llm "$MODEL" --tpm 6000000 --yes 2>/dev/null)
 ```
 
@@ -226,15 +226,15 @@ manifest:
 
 ```bash
 # See the cases
-npx github:aws-samples/bedrock-quota-increase list --run "$RUN_ID"
+npx github:aws-samples/sample-multi-account-bedrock-quota-increase list --run "$RUN_ID"
 
 # Add a note to every case in the run (inline, or from a file with --body-file)
-npx github:aws-samples/bedrock-quota-increase comment \
+npx github:aws-samples/sample-multi-account-bedrock-quota-increase comment \
   --start-url "$URL" --run "$RUN_ID" \
   --body "Following up — please prioritize, launch is next week."
 
 # Close every case in the run
-npx github:aws-samples/bedrock-quota-increase close \
+npx github:aws-samples/sample-multi-account-bedrock-quota-increase close \
   --start-url "$URL" --run "$RUN_ID" --yes
 ```
 
@@ -280,7 +280,7 @@ You don't need to create real cases to exercise almost the whole tool.
 ### 1. Local checkout — build and preview (no AWS calls)
 
 ```bash
-git clone https://github.com/aws-samples/bedrock-quota-increase
+git clone https://github.com/aws-samples/sample-multi-account-bedrock-quota-increase
 cd bedrock-quota-increase
 npm install          # also compiles TypeScript → dist/ via the prepare hook
 npm run typecheck    # should print no errors
@@ -308,7 +308,7 @@ account id).
 Point `npx` at your fork/branch — it clones, installs, builds, and runs:
 
 ```bash
-npx github:aws-samples/bedrock-quota-increase#main request --dry-run \
+npx github:aws-samples/sample-multi-account-bedrock-quota-increase#main request --dry-run \
   --start-url https://example.awsapps.com/start --accounts 111111111111 --llm foo --tpm 6000000
 ```
 

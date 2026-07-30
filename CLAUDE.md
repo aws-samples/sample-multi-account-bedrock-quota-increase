@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 `bedrock-quota-increase` (bin: `bqi`) is a zero-install CLI, run via
-`npx github:aws-samples/bedrock-quota-increase`, that fans out Amazon Bedrock
+`npx github:aws-samples/sample-multi-account-bedrock-quota-increase`, that fans out Amazon Bedrock
 model quota-increase requests across many AWS accounts. Per account it (1)
 ensures the AWS Marketplace subscription for the model, then (2) submits the
 quota increase through the **AWS Service Quotas API** — for an *adjustable*

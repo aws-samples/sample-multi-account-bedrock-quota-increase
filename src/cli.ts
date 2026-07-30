@@ -51,12 +51,12 @@ import type { ServiceQuota } from "@aws-sdk/client-service-quotas";
 // How users actually invoke the tool. It runs via `npx github:...` with no
 // install, so there is no `bqi` command on their PATH — always show the full
 // npx form in user-facing hints.
-const INVOKE = "npx github:aws-samples/bedrock-quota-increase";
+const INVOKE = "npx github:aws-samples/sample-multi-account-bedrock-quota-increase";
 
 const HELP = `${c.bold("bedrock-quota-increase")} — request Bedrock quota increases across accounts
 
 ${c.bold("USAGE")}
-  npx github:aws-samples/bedrock-quota-increase [command] [options]
+  npx github:aws-samples/sample-multi-account-bedrock-quota-increase [command] [options]
 
 ${c.bold("COMMANDS")}
   request   Subscribe to the model + submit quota increases per account   ${c.dim("(default)")}
@@ -104,14 +104,14 @@ ${c.bold("LIST / COMMENT / CLOSE OPTIONS")}
   --role, --region, --sso-region, --yes  as above
 
 ${c.bold("EXAMPLES")}
-  npx github:aws-samples/bedrock-quota-increase \\
+  npx github:aws-samples/sample-multi-account-bedrock-quota-increase \\
     --start-url https://my-org.awsapps.com/start \\
     --accounts 111111111111,222222222222 \\
     --llm global.anthropic.claude-opus-4-8 \\
     --input-tpm 4000000 --output-tpm 400000 \\
     --justification "We expect massive adoption of our new product"
 
-  npx github:aws-samples/bedrock-quota-increase close \\
+  npx github:aws-samples/sample-multi-account-bedrock-quota-increase close \\
     --start-url https://my-org.awsapps.com/start --run 20260728...-abc
 `;
 
