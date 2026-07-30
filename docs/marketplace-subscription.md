@@ -29,7 +29,7 @@ inspect it, and how the CLI now enables (and proves) model access.
 
 `GetFoundationModelAvailability` is a tempting proxy, but it is **not
 trustworthy**: it can report `AVAILABLE` / `AUTHORIZED` for a model that cannot
-actually be invoked. Observed live (2026-07-29, account `796988593450`):
+actually be invoked. Observed live against a test account:
 
 ```
 GetFoundationModelAvailability(anthropic.claude-3-haiku-20240307-v1:0, us-east-1)
@@ -180,15 +180,14 @@ get `AccessDeniedException: Service role not found`.
 
 ## Observed regional state (account context matters, and it drifts)
 
-Two sweeps of account `796988593450` (reached via an Isengard `admin` role)
-disagreed, which is itself a finding — **do not treat a single sweep as
-durable**:
+Two sweeps of the same test account (reached via an admin role) disagreed,
+which is itself a finding — **do not treat a single sweep as durable**:
 
-- **2026-07-28 sweep:** many regions reported `NONE_ENTITLED` for Anthropic
+- **First sweep:** many regions reported `NONE_ENTITLED` for Anthropic
   (`eu-central-1`, `eu-north-1`, `ap-northeast-1/2/3`, `ap-southeast-1/2`,
   `ap-south-1`, `ca-central-1`, `sa-east-1`); `eu-west-3` was partial (only
   Opus 5 / 4.8 / 4.7 / Sonnet 4).
-- **2026-07-29 checks:** the same account reported `entitlement AVAILABLE` in
+- **Second sweep (next day):** the same account reported `entitlement AVAILABLE` in
   `eu-central-1` and `ap-southeast-2`. This is **unexplained** — consistent with
   the "one Anthropic agreement covers the account" hypothesis, but not verified.
 - `eu-central-2` (Zurich) is an opt-in region **not enabled** on the account
@@ -203,10 +202,10 @@ geo pool.
 The account you *inspect* and the account `bqi` can *act on* may sit behind
 different identity paths:
 
-- `796988593450` was reachable for inspection via an Isengard `admin` role, but
-  the SSO org `d-9067f2ce8b.awsapps.com` did **not** grant access to it → `bqi`
-  failed with `No access` at `getAccountCredentials` (nothing created).
-- The same SSO org *did* reach `103761460084`.
+- One account was reachable for inspection via an admin role, but the SSO org
+  (`--start-url`) did **not** grant access to it → `bqi` failed with `No access`
+  at `getAccountCredentials` (nothing created).
+- The same SSO org *did* reach a different account.
 
 Takeaway: verify the `--start-url` (SSO org) actually includes the target
 account before running. "I can see it in the console/CLI" ≠ "this SSO start URL
@@ -214,14 +213,14 @@ can assume a role in it."
 
 ## Test history
 
-**Pre-migration run `20260728213211-73p1`** — account `103761460084`, region
-`eu-west-3`, model `anthropic.claude-3-haiku-20240307-v1:0`:
+**Pre-migration run** — a test account, region `eu-west-3`, model
+`anthropic.claude-3-haiku-20240307-v1:0`:
 
 - Subscribe step (old `CreateFoundationModelAgreement` path) → `already
   subscribed`, so the *create* call never actually ran. Note this model is now
   Legacy/EOL, so that "subscription" would not have yielded an invocable model —
   which is what motivated the migration.
-- Support case → created (`case-103761460084-...`).
+- Support case → created.
 - `bqi close` on this run **errored with `✗ UnknownError`** after the SSO
   device-authorization wait; the close command did **not** resolve the case and
   did not stamp `resolvedAt` in the manifest. **The case was closed manually**

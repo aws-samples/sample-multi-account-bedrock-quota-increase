@@ -1,3 +1,5 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: MIT-0
 // Enables (and proves) invocation of a Bedrock foundation model in an account by
 // actually calling the model once, per AWS's current "simplified model access"
 // guidance: access to Bedrock foundation models is enabled by default with the

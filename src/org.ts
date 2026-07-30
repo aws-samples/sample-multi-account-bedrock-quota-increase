@@ -1,3 +1,5 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: MIT-0
 // Thin wrapper over the AWS Organizations API for target-account selection.
 //
 // Lets a run choose its target accounts by Organizational Unit (--ou) or by

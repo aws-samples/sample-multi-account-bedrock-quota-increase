@@ -363,3 +363,16 @@ that the case was created, received the comment, and was resolved.
   grant quota.
 - Accounts are processed sequentially and the manifest is written after each, so
   an interruption still leaves a usable, actionable manifest.
+
+## Security
+
+See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
+
+If you discover a potential security issue in this project, we ask that you
+notify AWS/Amazon Security via our
+[vulnerability reporting page](http://aws.amazon.com/security/vulnerability-reporting/).
+Please do **not** create a public GitHub issue.
+
+## License
+
+This library is licensed under the MIT-0 License. See the [LICENSE](LICENSE) file.

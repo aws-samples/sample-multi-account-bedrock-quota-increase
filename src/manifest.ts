@@ -1,3 +1,5 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: MIT-0
 // A "run manifest" records every quota-increase request opened by a single
 // invocation so later commands (list / comment / close) can act on exactly that
 // set.

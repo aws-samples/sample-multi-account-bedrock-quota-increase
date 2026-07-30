@@ -1,3 +1,5 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: MIT-0
 // Self-contained AWS IAM Identity Center (SSO) login + per-account credentials.
 //
 // We run the OAuth 2.0 device-authorization flow ourselves via the SSO-OIDC

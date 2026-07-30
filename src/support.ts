@@ -1,3 +1,5 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: MIT-0
 // Thin wrapper over the AWS Support API for the operations this tool needs.
 //
 // NOTE: The AWS Support API requires a Business, Enterprise On-Ramp, or

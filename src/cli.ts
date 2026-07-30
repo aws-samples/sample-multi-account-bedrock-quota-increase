@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: MIT-0
+//
 // bedrock-quota-increase (bqi)
 //
 // Fan out Amazon Bedrock model quota-increase requests across many AWS accounts.

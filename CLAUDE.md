@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> Internal-only notes (real account ids, SSO org, test-environment specifics)
+> live in `CLAUDE.private.md`, which is gitignored and never published. See it
+> for local test context; keep anything non-public out of this file.
+
 ## What this is
 
 `bedrock-quota-increase` (bin: `bqi`) is a zero-install CLI, run via
@@ -29,9 +33,12 @@ node dist/cli.js <args>   # run the compiled CLI
 ```
 
 There is **no test framework and no linter.** Verification is `npm run typecheck`
-plus `--dry-run` (below). `dist/` is committed and shipped (`files` in
-package.json), so **run `npm run build` after editing `src/` or the compiled
-output goes stale** — `npx` and the `bin` entry both execute `dist/`, not `src/`.
+plus `--dry-run` (below). `dist/` is **git-ignored, not committed** — it is built
+on demand by the `prepare` hook, which npm runs automatically on `npm install`
+and on `npx github:...`, so a fresh clone/install always compiles `src/` before
+the `bin` entry runs. When developing locally, **run `npm run build` after editing
+`src/`** or `node dist/cli.js` will execute stale output (`npx` and the `bin`
+entry both execute `dist/`, not `src/`).
 
 ### Exercising the CLI without touching AWS
 

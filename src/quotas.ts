@@ -1,3 +1,5 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: MIT-0
 // Thin wrapper over the AWS Service Quotas API — the AWS-recommended path for
 // Bedrock model-inference quota increases (RPM / TPM). For an *adjustable*
 // quota, RequestServiceQuotaIncrease submits the request and AWS opens the

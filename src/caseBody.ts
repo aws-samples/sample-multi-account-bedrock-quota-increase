@@ -1,3 +1,5 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: MIT-0
 // Builds the human-readable subject, body, and marker comment for support cases.
 import { markerFor } from "./manifest.js";
 import type { BedrockModel, QuotaRequest } from "./models.js";

@@ -1,7 +1,7 @@
 
 
 
-How about Tolu and I put together a script which automates the process? Here's how you'll use it.
+How about we put together a script which automates the process? Here's how you'll use it.
  npx github:username/repo-name --accounts 123123123123,23423341331,134141412 --llm global.example.model --justification `#Example Justication \n We expect massive adoption of our new product` 
 We can keep it updated so that each time a new model comes out, you'll just run the command with the new llm inference profile. In the script if you don't supply an llm argument, you'll be able to pick from a list.
 We could also let you select accounts by AWS organizational unit or tag if that's easier too.

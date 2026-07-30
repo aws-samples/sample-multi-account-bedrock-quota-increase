@@ -1,3 +1,5 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: MIT-0
 // Tiny zero-dependency helpers for colored logging and interactive prompts.
 import readline from "node:readline";
 

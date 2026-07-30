@@ -1,3 +1,5 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: MIT-0
 // Minimal argv parser: supports `--flag value`, `--flag=value`, and `--bool`.
 // The first non-flag token is treated as the subcommand.
 export interface ParsedArgs {

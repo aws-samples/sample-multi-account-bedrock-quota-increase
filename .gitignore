@@ -5,3 +5,6 @@ dist/
 .DS_Store
 
 tmp
+
+# Internal-only notes — never publish
+CLAUDE.private.md
