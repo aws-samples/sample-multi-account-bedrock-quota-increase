@@ -30,7 +30,7 @@ import { organizationsClient, listAccountsUnderOu, listAccountsByTags, listOrgan
 import {
   supportClient, createCase, addComment, resolveCase, findCasesByMarker,
   caseHasMarker, findBedrockLimitCategory, toSupportCaseId,
-  describeCase, dispositionFromCaseStatus,
+  describeCase, caseStateFromCaseStatus,
 } from "./support.js";
 import { ensureSubscription, type SubscriptionResult } from "./bedrock.js";
 import {
@@ -40,14 +40,14 @@ import {
 import {
   serviceQuotasClient, listBedrockQuotas, findQuotaByCode, rankCandidates,
   requestIncrease, getRequestedChange, listChangeHistory, requestedDimensions,
-  dispositionFromRequestStatus,
+  caseStateFromRequestStatus,
   DIMENSION_LABEL, type QuotaTarget, type QuotaDimension,
 } from "./quotas.js";
 import {
   newRunId, markerFor, saveManifest, loadManifest, listRuns, caseBreakdown,
-  manifestCases, mergeDispositions,
+  manifestCases, mergeCaseStates,
   type RunManifest, type CaseRecord, type CaseBreakdown,
-  type QuotaRequestRecord, type CaseDisposition,
+  type QuotaRequestRecord, type CaseState,
 } from "./manifest.js";
 import type { ServiceQuota } from "@aws-sdk/client-service-quotas";
 
@@ -63,7 +63,7 @@ ${c.bold("USAGE")}
 
 ${c.bold("COMMANDS")}
   request   Subscribe to the model + submit quota increases per account   ${c.dim("(default)")}
-  list      Show the requests/cases opened by a run ${c.dim("(add --start-url for live approved/denied/needs-response status)")}
+  list      Show the requests/cases opened by a run ${c.dim("(add --start-url for live pending/resolved status)")}
   comment   Add a comment to every case in a run
   close     Resolve (close) every case in a run
   runs      List runs recorded on this machine
@@ -101,7 +101,7 @@ ${c.bold("REQUEST OPTIONS")}
 
 ${c.bold("LIST / COMMENT / CLOSE OPTIONS")}
   --run <runId>           The run to act on (interactive picker if omitted)
-  --start-url <url>       SSO start URL ${c.dim("(required for comment/close; optional for list — enables live case disposition)")}
+  --start-url <url>       SSO start URL ${c.dim("(required for comment/close; optional for list — refreshes live case state)")}
   --body <text>           Comment text            ${c.dim("(comment command)")}
   --body-file <path>      Read the comment text from a file ${c.dim("(comment command)")}
   --role, --region, --sso-region, --yes  as above
@@ -904,20 +904,24 @@ async function refreshPendingCaseIds(
   if (changed) saveManifest(manifest);
 }
 
-// Fetch the live AWS-side disposition (approved / denied / pending-customer /
-// resolved / pending) for each successfully-submitted request in the manifest.
-// This is *not* persisted — it reflects AWS's current view and changes over
-// time. Best effort: an account we can't reach leaves its requests "unknown".
-// Keyed by the QuotaRequestRecord object so the caller can look up each row it
-// renders. The disposition comes from the Service Quotas RequestStatus (the
-// richer source) and, for self-opened fallback cases, the Support case status.
-async function fetchDispositions(
+// Query AWS for the live state (pending / resolved) of each submitted request
+// and reconcile it back into the manifest so the local store stays fresh: a
+// case AWS has since closed gets its `resolvedAt` stamped even though this tool
+// didn't run `close`. State comes from the Service Quotas RequestStatus and the
+// backing Support case status; the two are merged (a closed case wins). Best
+// effort — an account we can't reach leaves its requests `unknown`. Returns the
+// live state per request for rendering, and saves the manifest if anything
+// changed. AWS does not expose the approve/deny decision through either API, so
+// open-vs-resolved is the only state we report.
+async function reconcileCaseStates(
   manifest: RunManifest,
   accessToken: string,
   ssoRegion: string,
   role: string | undefined,
-): Promise<Map<QuotaRequestRecord, CaseDisposition>> {
-  const out = new Map<QuotaRequestRecord, CaseDisposition>();
+  now: string,
+): Promise<Map<QuotaRequestRecord, CaseState>> {
+  const out = new Map<QuotaRequestRecord, CaseState>();
+  let changed = false;
   for (const rec of manifest.cases) {
     const reqs = (rec.quotaRequests || []).filter((q) => q.status === "requested");
     if (!reqs.length) continue;
@@ -926,39 +930,49 @@ async function fetchDispositions(
       const sq = serviceQuotasClient(manifest.region, credentials);
       const support = supportClient(credentials);
       for (const q of reqs) {
-        let disp: CaseDisposition = "unknown";
-        // Service Quotas RequestStatus (adjustable path) — the richer source.
+        let state: CaseState = "unknown";
+        // Service Quotas RequestStatus (adjustable path).
         if (q.requestId) {
           try {
             const change = await getRequestedChange(sq, q.requestId);
-            disp = mergeDispositions(disp, dispositionFromRequestStatus(change?.Status));
+            state = mergeCaseStates(state, caseStateFromRequestStatus(change?.Status));
           } catch { /* leave as-is */ }
         }
-        // Support case status: authoritative for the self-opened fallback, and
-        // fills in pending-customer-action, which Service Quotas can't report.
+        // Backing Support case status (authoritative for the self-opened path).
         if (q.caseId) {
           try {
             const details = await describeCase(support, q.caseId);
-            disp = mergeDispositions(disp, dispositionFromCaseStatus(details?.status));
+            state = mergeCaseStates(state, caseStateFromCaseStatus(details?.status));
           } catch { /* leave as-is */ }
         }
-        out.set(q, disp);
+        out.set(q, state);
+        // Keep the local manifest fresh: stamp resolvedAt when AWS has closed a
+        // case we hadn't recorded as resolved (and clear a stale one if AWS
+        // shows it open again, e.g. reopened).
+        if (state === "resolved" && !q.resolvedAt) { q.resolvedAt = now; changed = true; }
+        else if (state === "pending" && q.resolvedAt) { q.resolvedAt = undefined; changed = true; }
       }
     } catch (e: any) {
-      log.warn(`Account ${rec.accountId}: could not fetch case disposition — ${e?.message || e}`);
+      log.warn(`Account ${rec.accountId}: could not fetch case state — ${e?.message || e}`);
     }
   }
+  if (changed) saveManifest(manifest);
   return out;
 }
 
-// Short colored token for a request's live AWS-side disposition.
-function formatDisposition(disp: CaseDisposition): string {
-  switch (disp) {
-    case "approved": return c.green("approved");
-    case "denied": return c.red("denied");
-    case "pending-customer": return c.yellow("needs-response");
+// The live state to show for a request: what AWS reported this run, falling
+// back to the manifest's own record (resolvedAt) when we didn't reach AWS.
+function requestCaseState(q: QuotaRequestRecord, live: Map<QuotaRequestRecord, CaseState> | undefined): CaseState {
+  const s = live?.get(q);
+  if (s && s !== "unknown") return s;
+  return q.resolvedAt ? "resolved" : "pending";
+}
+
+// Short colored token for a case state.
+function formatCaseState(state: CaseState): string {
+  switch (state) {
     case "resolved": return c.blue("resolved");
-    case "pending": return c.dim("pending");
+    case "pending": return c.green("pending");
     case "unknown":
     default: return c.dim("?");
   }
@@ -970,9 +984,11 @@ async function cmdList(flags: Record<string, string | boolean>): Promise<void> {
   const manifest = loadManifest(runId);
   if (manifest) {
     // With --start-url we log in once to (1) fill in any pending case IDs and
-    // (2) fetch each request's live AWS-side disposition. Without it, `list`
-    // stays fully offline and shows only the tool-side state from the manifest.
-    let dispositions: Map<QuotaRequestRecord, CaseDisposition> | undefined;
+    // (2) reconcile each request's live AWS-side state (pending / resolved) back
+    // into the manifest, so the local store stays fresh even when AWS closed a
+    // case without us running `close`. Without it, `list` stays fully offline
+    // and shows the last-known state recorded in the manifest.
+    let liveStates: Map<QuotaRequestRecord, CaseState> | undefined;
     const startUrl = flagStr(flags, "start-url");
     if (startUrl) {
       const ssoRegion = flagStr(flags, "sso-region") || "us-east-1";
@@ -982,7 +998,7 @@ async function cmdList(flags: Record<string, string | boolean>): Promise<void> {
         if (hasPendingCaseIds(manifest)) {
           await refreshPendingCaseIds(manifest, accessToken, ssoRegion, role);
         }
-        dispositions = await fetchDispositions(manifest, accessToken, ssoRegion, role);
+        liveStates = await reconcileCaseStates(manifest, accessToken, ssoRegion, role, new Date().toISOString());
       } catch (e: any) {
         log.warn(`Could not refresh from AWS: ${e?.message || e}`);
       }
@@ -1000,21 +1016,21 @@ async function cmdList(flags: Record<string, string | boolean>): Promise<void> {
       if (!reqs.length && rec.status !== undefined) {
         // Legacy per-account case rendering.
         const tag = rec.status !== "created" ? c.red(rec.status)
-          : rec.resolvedAt ? c.blue("closed") : c.green("open");
+          : rec.resolvedAt ? c.blue("resolved") : c.green("pending");
         log.plain(`  ${rec.accountId}  ${tag}  ${sub}  ${rec.caseId || ""}`);
         if (rec.caseId) out(`${rec.accountId} ${rec.caseId}`);
         continue;
       }
       log.plain(`  ${rec.accountId}  ${sub}`);
       for (const q of reqs) {
+        // A single state word: submission failures/skips keep their own tag;
+        // everything successfully submitted shows its case state (pending until
+        // the backing case is opened, then pending/resolved from AWS).
         const state = q.status !== "requested" ? c.red(q.status)
-          : q.resolvedAt ? c.blue("closed")
-          : q.caseId ? c.green("open") : c.yellow("case pending");
+          : !q.caseId ? c.yellow("case pending")
+          : formatCaseState(requestCaseState(q, liveStates));
         const via = q.method === "service-quotas" ? c.dim("sq") : c.dim("case");
-        // Live AWS-side disposition, only when we fetched it (--start-url).
-        const disp = dispositions?.get(q);
-        const dispCol = disp ? `  ${formatDisposition(disp)}` : "";
-        log.plain(`      ${DIMENSION_LABEL[q.dimension]} → ${q.desiredValue.toLocaleString("en-US")}  ${state}${dispCol}  ${via}  ${q.caseId || q.requestId || ""}${q.error ? c.red(" " + q.error) : ""}`);
+        log.plain(`      ${DIMENSION_LABEL[q.dimension]} → ${q.desiredValue.toLocaleString("en-US")}  ${state}  ${via}  ${q.caseId || q.requestId || ""}${q.error ? c.red(" " + q.error) : ""}`);
         if (q.caseId) out(`${rec.accountId} ${q.caseId}`);
       }
     }
@@ -1120,12 +1136,12 @@ function stampResolved(m: RunManifest, caseId: string, iso: string): void {
   }
 }
 
-// Render a case breakdown like "1 open · 2 closed · 1 failed", coloring only
-// the non-zero segments so the common case stays readable.
+// Render a case breakdown like "1 pending · 2 resolved · 1 failed", coloring
+// only the non-zero segments so the common case stays readable.
 function formatBreakdown(b: CaseBreakdown): string {
   const parts = [
-    `${b.open ? c.green(String(b.open)) : b.open} open`,
-    `${b.closed ? c.blue(String(b.closed)) : b.closed} closed`,
+    `${b.open ? c.green(String(b.open)) : b.open} pending`,
+    `${b.closed ? c.blue(String(b.closed)) : b.closed} resolved`,
     `${b.createFailed ? c.red(String(b.createFailed)) : b.createFailed} failed`,
   ];
   return parts.join(c.dim(" · "));
