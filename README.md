@@ -3,8 +3,9 @@
 Request **Amazon Bedrock model quota increases across many AWS accounts** in one
 command. For each account the tool:
 
-1. **Creates the AWS Marketplace subscription** for the model (the Bedrock
-   *foundation-model agreement*), so the model is ready to invoke; and
+1. **Enables model access** by invoking the model once, so it's ready to use —
+   on a fresh account that first invocation also creates the AWS Marketplace
+   agreement (the Bedrock *foundation-model agreement*) as a side effect; and
 2. **Submits the quota increase through the AWS Service Quotas API** — the
    AWS-recommended path. For an *adjustable* quota AWS opens the backing Support
    case itself; a *non-adjustable* quota falls back to a Support case this tool
@@ -118,37 +119,53 @@ the OU *and* carry all the tags.
   only needed to `comment` on / `close` those cases from this tool, and to open
   the direct fallback case for a *non-adjustable* quota. (`--dry-run` works on
   any plan.)
-- For the **subscription step**, the role assumed in each account needs the
-  `aws-marketplace:Subscribe`, `aws-marketplace:ViewSubscriptions`, and Bedrock
-  agreement permissions (e.g. `AmazonBedrockFullAccess`), plus a valid payment
-  method on the account. See [Skip it with `--no-subscribe`](#aws-marketplace-subscriptions)
-  if your roles can't subscribe.
+- For the **model-access step**, the role assumed in each account needs Bedrock
+  invoke permissions — `bedrock:InvokeModel`, `bedrock:Converse`, and
+  `bedrock:ListInferenceProfiles` (e.g. `AmazonBedrockFullAccess`) — plus the
+  AWS Marketplace permissions that let the first invocation create the agreement,
+  and a valid payment method on the account. See
+  [Skip it with `--no-subscribe`](#enabling-model-access) if your roles can't invoke.
 
-## AWS Marketplace subscriptions
+## Enabling model access
 
 Serverless third-party Bedrock models (e.g. Anthropic Claude) are sold through
-AWS Marketplace and must be **subscribed to** in an account before they can be
-invoked. By default `request` ensures that subscription in every target account
-before submitting the quota increase, using the Bedrock control-plane agreement flow:
+AWS Marketplace and need a foundation-model agreement on an account before they
+can be invoked. Under AWS's current **simplified model access**, that agreement
+is created automatically on the model's **first invocation** — so rather than
+call the agreement control-plane API, `request` proves (and enables) access by
+**invoking the model once** in every target account before submitting the quota
+increase:
 
-1. `GetFoundationModelAvailability` — if the model is already available, skip.
-2. `PutUseCaseForModelAccess` — one-time first-time-use form (**Anthropic only**).
-3. `ListFoundationModelAgreementOffers` → `CreateFoundationModelAgreement` — the
-   actual subscribe.
+1. `ListInferenceProfiles` — find the inference profile that fronts the model in
+   `--region` (base model ids usually aren't invocable on-demand, and the
+   regional prefix — `us.`, `eu.`, `au.`, … — isn't guessable, so the profile is
+   resolved from Bedrock rather than string-built).
+2. `Converse` — send a tiny 1-token probe. Success proves the model can be
+   invoked here; on a fresh account this first call also creates the AWS
+   Marketplace agreement as a side effect.
+
+Why invoke instead of the agreement/availability APIs: the real question is *"can
+this account invoke the model?"*, and only an invocation answers it.
+`GetFoundationModelAvailability` can report `AVAILABLE` for a model that still
+can't be invoked (e.g. a provider-Legacy/EOL model), so it isn't a trustworthy
+proxy. See [docs/marketplace-subscription.md](docs/marketplace-subscription.md)
+for the full rationale.
 
 Notes:
 
-- The subscription is **regional** — it's created in `--region` (default
+- Model access is **regional** — it's enabled/verified in `--region` (default
   `us-east-1`), unlike the global Support endpoint.
-- Models keyed to an **inference profile** (`us.…`, `global.…`) are subscribed
-  by their underlying foundation-model id (the regional prefix is stripped).
+- Models keyed to an **inference profile** (`us.…`, `global.…`) are resolved to
+  their underlying foundation-model id (the regional prefix is stripped), then
+  the region's fronting profile is looked up to invoke.
 - Models **not sold through AWS Marketplace** (Amazon, Meta, Mistral, DeepSeek,
-  Qwen, OpenAI) need no subscription; the step is reported as `skipped`.
-- The step is **idempotent** — accounts already subscribed are reported as
-  `already-subscribed` and left untouched.
+  Qwen, OpenAI) need no agreement; the step is reported as `skipped`.
+- A successful invocation is reported as `subscribed`. (The invoke can't cheaply
+  tell "just enabled" from "already had access", so there's no separate
+  `already-subscribed` state on new runs.)
 - Use `--no-subscribe` to only submit the quota request, or `--subscribe-only`
-  to subscribe without requesting an increase (e.g. when your quota is already
-  sufficient).
+  to enable access without requesting an increase (e.g. when your quota is
+  already sufficient).
 
 ## How the quota request works
 
@@ -204,8 +221,8 @@ Run `npx github:aws-samples/sample-multi-account-bedrock-quota-increase --help` 
 | `--rpm <n>` / `--tpm <n>` | Requested requests- / combined-tokens-per-minute (older models with a single TPM quota). |
 | `--input-tpm <n>` / `--output-tpm <n>` | Requested input- / output-tokens-per-minute (newer models with split token quotas). |
 | `--cc <emails>` | Comma-separated CC addresses on the fallback case. |
-| `--no-subscribe` | Skip the AWS Marketplace subscription step; only submit the quota request. |
-| `--subscribe-only` | Only create the AWS Marketplace subscription; submit no quota request. Mutually exclusive with `--no-subscribe`. |
+| `--no-subscribe` | Skip the model-access (invoke) step; only submit the quota request. |
+| `--subscribe-only` | Only enable model access (invoke once); submit no quota request. Mutually exclusive with `--no-subscribe`. |
 | `--dry-run` | Print what would happen; create nothing. Works on any support plan. |
 | `--yes` | Skip the confirmation prompt (for CI / non-interactive use). |
 
@@ -225,8 +242,14 @@ manifest is saved under `~/.bqi/runs/<id>.json`. Use either the run ID or the
 manifest:
 
 ```bash
-# See the cases
+# See the cases (offline — tool-side state only)
 npx github:aws-samples/sample-multi-account-bedrock-quota-increase list --run "$RUN_ID"
+
+# See the cases with their live AWS-side disposition (approved / denied /
+# needs-response / resolved / pending). Adding --start-url logs in and queries
+# Service Quotas + Support for each request's current status.
+npx github:aws-samples/sample-multi-account-bedrock-quota-increase list \
+  --start-url "$URL" --run "$RUN_ID"
 
 # Add a note to every case in the run (inline, or from a file with --body-file)
 npx github:aws-samples/sample-multi-account-bedrock-quota-increase comment \
@@ -281,7 +304,7 @@ You don't need to create real cases to exercise almost the whole tool.
 
 ```bash
 git clone https://github.com/aws-samples/sample-multi-account-bedrock-quota-increase
-cd bedrock-quota-increase
+cd sample-multi-account-bedrock-quota-increase
 npm install          # also compiles TypeScript → dist/ via the prepare hook
 npm run typecheck    # should print no errors
 
@@ -344,9 +367,9 @@ that the case was created, received the comment, and was resolved.
 |------|-----------|---------------------|
 | `--dry-run`               | none                                     | no  |
 | `npm run typecheck`       | none                                     | no  |
-| real `request --subscribe-only` | SSO + Bedrock agreement APIs       | no  |
+| real `request --subscribe-only` | SSO + Bedrock invoke (Converse)    | no  |
 | real `request --no-subscribe`   | SSO + Service Quotas               | no¹ |
-| real `request` (default)  | SSO + Bedrock agreement + Service Quotas | no¹ |
+| real `request` (default)  | SSO + Bedrock invoke + Service Quotas | no¹ |
 | `comment` / `close`       | SSO + Support                            | yes |
 
 ¹ A Business/Enterprise support plan is only needed if a requested quota is

@@ -21,6 +21,7 @@ import {
 } from "@aws-sdk/client-service-quotas";
 import type { AwsCredentials } from "./sso.js";
 import type { BedrockModel, QuotaRequest } from "./models.js";
+import type { CaseDisposition } from "./manifest.js";
 
 // Bedrock's Service Quotas service code (distinct from the Support serviceCode).
 export const BEDROCK_SERVICE_CODE = "bedrock";
@@ -179,6 +180,23 @@ export async function requestIncrease(
     DesiredValue: desiredValue,
   }));
   return res.RequestedQuota!;
+}
+
+// Map a Service Quotas RequestStatus (the adjustable-quota path) to the
+// tool's AWS-side disposition. The enum values are: PENDING, CASE_OPENED,
+// CASE_CLOSED, APPROVED, DENIED, NOT_APPROVED, INVALID_REQUEST. An undefined
+// status (or one we don't recognize) yields "unknown".
+export function dispositionFromRequestStatus(status: string | undefined): CaseDisposition {
+  switch (status) {
+    case "APPROVED": return "approved";
+    case "DENIED":
+    case "NOT_APPROVED": return "denied";
+    case "CASE_CLOSED": return "resolved";
+    case "PENDING":
+    case "CASE_OPENED": return "pending";
+    // INVALID_REQUEST and anything unmapped: no clear disposition.
+    default: return "unknown";
+  }
 }
 
 // Refresh a previously submitted request — used to pick up a CaseId that wasn't

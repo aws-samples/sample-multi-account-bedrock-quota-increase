@@ -26,6 +26,7 @@ import {
   type CaseDetails,
 } from "@aws-sdk/client-support";
 import type { AwsCredentials } from "./sso.js";
+import type { CaseDisposition } from "./manifest.js";
 
 const SUPPORT_ENDPOINT_REGION = "us-east-1";
 
@@ -117,12 +118,29 @@ export async function resolveCase(client: SupportClient, caseId: string): Promis
 }
 
 export async function describeCase(client: SupportClient, caseId: string): Promise<CaseDetails | undefined> {
+  const id = await toSupportCaseId(client, caseId);
   const res = await client.send(new DescribeCasesCommand({
-    caseIdList: [caseId],
+    caseIdList: [id],
     includeResolvedCases: true,
     includeCommunications: false,
   }));
   return res.cases?.[0];
+}
+
+// Map a Support case `status` to the tool's AWS-side disposition. The Support
+// API's case status is about the *case lifecycle*, not the quota decision, so
+// it can't report approved/denied — only whether the case is open, waiting on
+// the customer, or resolved. Used for the self-opened (non-adjustable) fallback
+// path; the Service Quotas RequestStatus is the richer source when available.
+// Valid API values: all-open, opened, reopened, unassigned, work-in-progress,
+// pending-customer-action, customer-action-completed, resolved.
+export function dispositionFromCaseStatus(status: string | undefined): CaseDisposition {
+  switch (status) {
+    case "resolved": return "resolved";
+    case "pending-customer-action": return "pending-customer";
+    case undefined: return "unknown";
+    default: return "pending"; // opened / reopened / work-in-progress / customer-action-completed / …
+  }
 }
 
 // Whether a case's communications contain the given marker text. This is how a

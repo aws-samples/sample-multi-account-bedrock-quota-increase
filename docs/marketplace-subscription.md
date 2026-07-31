@@ -1,9 +1,9 @@
 # Bedrock model access & the "Marketplace subscription": how it actually works
 
-Notes captured 2026-07-28, revised 2026-07-29 after migrating `bqi` from the
-control-plane agreement API to an **invocation-based** enablement path. This
-documents what an Amazon Bedrock foundation-model "subscription" is, how you
-inspect it, and how the CLI now enables (and proves) model access.
+Background on why `bqi` enables Bedrock model access by **invoking the model
+once** rather than calling the control-plane agreement API. This documents what
+an Amazon Bedrock foundation-model "subscription" is, how you inspect it, and how
+the CLI enables (and proves) model access.
 
 ## TL;DR
 
@@ -57,8 +57,7 @@ aws bedrock get-foundation-model-availability \
 
 **No.** One Anthropic agreement/EULA covers all Anthropic model versions in an
 account; new Claude releases carry the existing EULA forward. Per AWS launch
-FAQs (surfaced via Amazon Quick, so treat wording as second-hand but consistent
-across multiple sources):
+FAQs (wording paraphrased, but consistent across multiple sources):
 
 - Claude Sonnet 4 / Opus 4 FAQ: *"customers will not be expected to acknowledge
   or accept a new EULA. The existing Anthropic EULA will apply."*
@@ -178,60 +177,41 @@ aws marketplace-agreement search-agreements --catalog AWSMarketplace \
 requires the License Manager service-linked role to be set up; without it you
 get `AccessDeniedException: Service role not found`.
 
-## Observed regional state (account context matters, and it drifts)
+## Regional entitlement is per-region and can drift
 
-Two sweeps of the same test account (reached via an admin role) disagreed,
-which is itself a finding — **do not treat a single sweep as durable**:
+Anthropic entitlement is reported **per Bedrock region**, and the reported state
+for a given account is not always stable over time — an account can report
+`NONE_ENTITLED` for a region one day and `entitlement AVAILABLE` the next, with
+no explicit action in between. This is consistent with the "one Anthropic
+agreement covers the account" behavior above, but the exact propagation isn't
+documented. Two takeaways:
 
-- **First sweep:** many regions reported `NONE_ENTITLED` for Anthropic
-  (`eu-central-1`, `eu-north-1`, `ap-northeast-1/2/3`, `ap-southeast-1/2`,
-  `ap-south-1`, `ca-central-1`, `sa-east-1`); `eu-west-3` was partial (only
-  Opus 5 / 4.8 / 4.7 / Sonnet 4).
-- **Second sweep (next day):** the same account reported `entitlement AVAILABLE` in
-  `eu-central-1` and `ap-southeast-2`. This is **unexplained** — consistent with
-  the "one Anthropic agreement covers the account" hypothesis, but not verified.
-- `eu-central-2` (Zurich) is an opt-in region **not enabled** on the account
-  (`UnrecognizedClientException`) — different from "offered but unsubscribed".
+- **Don't treat a single availability sweep as durable** — it's a snapshot, not
+  a guarantee.
+- Per-region gaps often don't matter in practice if you invoke via a
+  cross-region inference profile (`global.` / regional profiles), which route to
+  a geo pool.
 
-Practical note: per-region gaps often don't matter if you invoke via a
-cross-region inference profile (`global.` / regional profiles), which route to a
-geo pool.
+Note also that **opt-in regions** you haven't enabled on the account return
+`UnrecognizedClientException` — which is distinct from "offered but not yet
+entitled".
 
-## Identity gotcha discovered during testing
+## Identity gotcha: inspection access ≠ SSO access
 
-The account you *inspect* and the account `bqi` can *act on* may sit behind
-different identity paths:
-
-- One account was reachable for inspection via an admin role, but the SSO org
-  (`--start-url`) did **not** grant access to it → `bqi` failed with `No access`
-  at `getAccountCredentials` (nothing created).
-- The same SSO org *did* reach a different account.
+The account you can *inspect* (e.g. via an admin role in the console) and the
+account `bqi` can *act on* may sit behind different identity paths. An account
+reachable for inspection may not be granted by the SSO org behind your
+`--start-url`, in which case `bqi` fails with `No access` at
+`getAccountCredentials` and creates nothing.
 
 Takeaway: verify the `--start-url` (SSO org) actually includes the target
 account before running. "I can see it in the console/CLI" ≠ "this SSO start URL
 can assume a role in it."
 
-## Test history
+## Caveats worth knowing
 
-**Pre-migration run** — a test account, region `eu-west-3`, model
-`anthropic.claude-3-haiku-20240307-v1:0`:
-
-- Subscribe step (old `CreateFoundationModelAgreement` path) → `already
-  subscribed`, so the *create* call never actually ran. Note this model is now
-  Legacy/EOL, so that "subscription" would not have yielded an invocable model —
-  which is what motivated the migration.
-- Support case → created.
-- `bqi close` on this run **errored with `✗ UnknownError`** after the SSO
-  device-authorization wait; the close command did **not** resolve the case and
-  did not stamp `resolvedAt` in the manifest. **The case was closed manually**
-  in the console instead.
-
-**Post-migration end-to-end test** — the invoke-based path was exercised
-end-to-end through the CLI and **succeeded** (confirmed by the operator,
-2026-07-29). The `ListInferenceProfiles` → `Converse` flow, profile resolution,
-and `invokedVia` logging all worked against a live account.
-
-Still **not** independently observed here: invoke *auto-creating* an agreement
-on a genuinely fresh/unsubscribed account (every reachable account was already
-entitled). That specific claim rests on AWS guidance, not our own before/after
-capture.
+- The invoke path *auto-creating* an agreement on a genuinely fresh, never-
+  entitled account rests on AWS's simplified-model-access guidance rather than a
+  before/after capture in this project — accounts tested here were already
+  entitled. The behavior is documented by AWS; just be aware the first-invoke
+  side effect is the mechanism the tool relies on.

@@ -58,6 +58,36 @@ export type QuotaRequestStatus =
   | "failed"      // submission failed
   | "skipped";    // not attempted
 
+// The *AWS-side* disposition of a request, distinct from QuotaRequestStatus
+// (which only records what this tool did). Derived live from the Service Quotas
+// RequestStatus and/or the backing Support case's status; never persisted,
+// because it changes over time on AWS's side. `unknown` means we couldn't (or
+// didn't) fetch it.
+export type CaseDisposition =
+  | "pending"          // submitted; AWS reviewing, no decision yet
+  | "pending-customer" // waiting on a response from the customer
+  | "approved"         // increase granted
+  | "denied"           // increase refused
+  | "resolved"         // backing case closed/resolved
+  | "unknown";
+
+// When two sources disagree (Service Quotas RequestStatus vs. Support case
+// status), keep the more informative one. A firm decision (denied/approved)
+// beats an actionable-but-open state (pending-customer), which beats a merely
+// closed case, which beats plain pending, which beats unknown.
+const DISPOSITION_RANK: Record<CaseDisposition, number> = {
+  denied: 5,
+  approved: 4,
+  "pending-customer": 3,
+  resolved: 2,
+  pending: 1,
+  unknown: 0,
+};
+
+export function mergeDispositions(a: CaseDisposition, b: CaseDisposition): CaseDisposition {
+  return DISPOSITION_RANK[a] >= DISPOSITION_RANK[b] ? a : b;
+}
+
 // One quota-increase request within an account: what we asked for, how, and the
 // Service Quotas request id / backing Support case id it produced.
 export interface QuotaRequestRecord {
