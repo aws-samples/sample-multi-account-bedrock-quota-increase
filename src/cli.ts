@@ -1034,7 +1034,14 @@ async function cmdList(flags: Record<string, string | boolean>): Promise<void> {
         if (q.caseId) out(`${rec.accountId} ${q.caseId}`);
       }
     }
-    log.plain(`  ${c.dim("—")} ${formatBreakdown(caseBreakdown(manifest.cases))}`);
+    const breakdown = caseBreakdown(manifest.cases);
+    log.plain(`  ${c.dim("—")} ${formatBreakdown(breakdown)}`);
+    // AWS doesn't report the grant/refusal decision through the API, and a
+    // pending case may be in review or waiting on a response from you — point
+    // users at the console for anything beyond open-vs-resolved.
+    if (breakdown.open > 0) {
+      log.plain(`  ${c.dim("Open the backing support case in the AWS console for the decision or any pending questions.")}`);
+    }
     return;
   }
 

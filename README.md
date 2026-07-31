@@ -252,7 +252,9 @@ npx github:aws-samples/sample-multi-account-bedrock-quota-increase list --run "$
 #
 # Note: AWS does not expose the approve/deny *decision* for a Bedrock quota
 # case through either API, so `list` reports only whether the backing case is
-# still open (pending) or closed (resolved), not whether it was granted.
+# still open (pending) or closed (resolved), not whether it was granted. A
+# pending case may be in review or waiting on a reply from you — open the
+# support case in the AWS console for the decision or any pending questions.
 npx github:aws-samples/sample-multi-account-bedrock-quota-increase list \
   --start-url "$URL" --run "$RUN_ID"
 

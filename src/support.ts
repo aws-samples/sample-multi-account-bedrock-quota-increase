@@ -129,16 +129,16 @@ export async function describeCase(client: SupportClient, caseId: string): Promi
 
 // Map a Support case `status` to the tool's case state. The Support API's case
 // status tracks the case *lifecycle*, not the quota decision (it can't report
-// approved/denied) — so we reduce it to resolved vs. still-open. Used for the
-// self-opened (non-adjustable) fallback path, and to corroborate the Service
-// Quotas state. Valid API values: all-open, opened, reopened, unassigned,
-// work-in-progress, pending-customer-action, customer-action-completed,
-// resolved.
+// approved/denied) — so we reduce it to just resolved vs. still-open. The API's
+// finer-grained open states (e.g. work-in-progress, waiting on the customer)
+// are collapsed into `pending`; users who need that detail check the support
+// case directly. Used for the self-opened (non-adjustable) fallback path, and
+// to corroborate the Service Quotas state.
 export function caseStateFromCaseStatus(status: string | undefined): CaseState {
   switch (status) {
     case "resolved": return "resolved";
     case undefined: return "unknown";
-    default: return "pending"; // opened / reopened / work-in-progress / pending-customer-action / …
+    default: return "pending"; // any non-resolved lifecycle state
   }
 }
 
