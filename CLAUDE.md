@@ -89,8 +89,10 @@ is the orchestrator; each other file is one seam:
 - **`org.ts`** — AWS Organizations wrapper for account selection by `--ou`
   (`listAccountsUnderOu`, recursive) or `--tag` (`listAccountsByTags`). Global
   service, client built in `us-east-1` like Support. ACTIVE accounts only.
-- **`bedrock.ts`** — AWS Marketplace subscription (foundation-model agreement)
-  via the Bedrock control-plane APIs. Idempotent; `ensureSubscription`.
+- **`bedrock.ts`** — enables/proves model access by **invoking the model once**
+  (`ListInferenceProfiles` → `Converse`), which on a fresh account creates the
+  AWS Marketplace foundation-model agreement as a side effect. Does **not** call
+  the agreement control-plane API. `ensureSubscription`; regional (`--region`).
 - **`support.ts`** — thin AWS Support API wrapper (fallback case creation +
   comment/resolve + marker read). The Support client is **always** built in
   `us-east-1` (global endpoint) regardless of `--region`. `findBedrockLimitCategory`
