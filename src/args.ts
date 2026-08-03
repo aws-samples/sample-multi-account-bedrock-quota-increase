@@ -55,7 +55,9 @@ export function flagBool(flags: Record<string, string | boolean>, name: string):
 export function flagInt(flags: Record<string, string | boolean>, name: string): number | undefined {
   const v = flagStr(flags, name);
   if (v === undefined) return undefined;
-  const n = Number.parseInt(v, 10);
+  // Accept `_` and `,` digit-group separators (e.g. --tpm 30_000_000): strip
+  // them first, since Number.parseInt would silently stop at the first `_`.
+  const n = Number.parseInt(v.replace(/[_,]/g, ""), 10);
   return Number.isFinite(n) ? n : undefined;
 }
 
