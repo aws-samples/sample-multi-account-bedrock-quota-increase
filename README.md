@@ -126,6 +126,36 @@ the OU *and* carry all the tags.
   and a valid payment method on the account. See
   [Skip it with `--no-subscribe`](#enabling-model-access) if your roles can't invoke.
 
+### Required IAM permissions
+
+No single named role is required — the tool assumes an **IAM Identity Center
+permission set / role** in each account (defaulting to the first role available,
+or the one you pass with `--role`). What matters is the actions that role carries:
+
+**In every target account** (the role from `--role`):
+
+- **Service Quotas** — the primary request path, always needed:
+  - `servicequotas:ListServiceQuotas`
+  - `servicequotas:RequestServiceQuotaIncrease`
+  - `servicequotas:GetRequestedServiceQuotaChange`
+  - `servicequotas:ListRequestedServiceQuotaChangeHistory`
+- **Bedrock** — for the model-access step (skip with `--no-subscribe`):
+  `bedrock:InvokeModel`, `bedrock:Converse`, `bedrock:ListInferenceProfiles`
+  (e.g. `AmazonBedrockFullAccess`), plus the AWS Marketplace permissions that let
+  the first invocation create the foundation-model agreement, and a valid payment
+  method on the account.
+- **AWS Support** — only for `comment`/`close` and the non-adjustable-quota
+  fallback case: `support:CreateCase`, `support:AddCommunicationToCase`,
+  `support:ResolveCase`, `support:DescribeCases`, `support:DescribeServices`,
+  `support:DescribeCommunications`. Requires a Business/Enterprise On-Ramp/
+  Enterprise support plan. Plain quota submission does **not** need this.
+
+**In the org management / delegated-admin account** (only with `--ou`/`--tag`,
+via `--org-role`) — read-only AWS Organizations access:
+`organizations:ListRoots`, `organizations:ListOrganizationalUnitsForParent`,
+`organizations:ListAccountsForParent`, `organizations:ListAccounts`,
+`organizations:ListTagsForResource`.
+
 ## Enabling model access
 
 Serverless third-party Bedrock models (e.g. Anthropic Claude) are sold through
