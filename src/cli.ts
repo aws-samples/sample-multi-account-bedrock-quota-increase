@@ -225,6 +225,18 @@ async function resolveQuotaTargets(
   for (const w of wanted) {
     const candidates = rankCandidates(allQuotas, model, w.dimension);
     if (candidates.length === 0) {
+      // Newer models drop the combined "tokens per minute" quota and only expose
+      // split input/output TPM. If --tpm was passed but the model has no combined
+      // quota, apply that value to BOTH the input and output TPM quotas instead of
+      // skipping — that's the closest honest fulfillment of the request.
+      if (w.dimension === "tokensPerMinute") {
+        const split = resolveSplitTpmFallback(allQuotas, model, w.value);
+        if (split.length) {
+          log.warn(`${model.label} has no combined "${DIMENSION_LABEL[w.dimension]}" quota; applying --tpm ${w.value.toLocaleString("en-US")} to both input and output TPM instead.`);
+          resolved.push(...split);
+          continue;
+        }
+      }
       log.warn(`No Bedrock quota matched "${DIMENSION_LABEL[w.dimension]}" for ${model.label}. Skipping this dimension — pass --quota-code to target it explicitly.`);
       continue;
     }
@@ -232,6 +244,24 @@ async function resolveQuotaTargets(
     resolved.push({ target: quotaTargetFrom(alternatives[0]!, w.dimension, w.value), alternatives });
   }
   return resolved;
+}
+
+// Fallback for a combined --tpm request against a model that only exposes split
+// input/output TPM quotas: fuzzy-match each split dimension and request `value`
+// for both. Returns [] if neither split quota matches (caller then skips).
+function resolveSplitTpmFallback(
+  allQuotas: ServiceQuota[],
+  model: BedrockModel,
+  value: number,
+): ResolvedTarget[] {
+  const out: ResolvedTarget[] = [];
+  for (const dim of ["inputTokensPerMinute", "outputTokensPerMinute"] as const) {
+    const candidates = rankCandidates(allQuotas, model, dim);
+    if (candidates.length === 0) continue;
+    const alternatives = candidates.map((cand) => cand.quota);
+    out.push({ target: quotaTargetFrom(alternatives[0]!, dim, value), alternatives });
+  }
+  return out;
 }
 
 function quotaTargetFrom(q: ServiceQuota, dimension: QuotaDimension, desiredValue: number): QuotaTarget {
