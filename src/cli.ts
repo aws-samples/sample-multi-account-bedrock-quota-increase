@@ -546,8 +546,9 @@ async function cmdRequest(flags: Record<string, string | boolean>): Promise<void
         log.plain(`${c.dim("would stamp marker comment on the backing case in")} ${label(accountId)}`);
       }
     }
-    if (doRequest && accounts.length >= 2) {
-      log.plain(`${c.dim(`would post a cross-reference comment linking ${accounts.length} cases`)}`);
+    if (doRequest) {
+      log.plain(`${c.dim("would wait for the backing case(s) to open, then post a batch comment on each")}`);
+      log.plain(`${c.dim(`  (${justification.trim() ? "business justification" : "no justification given"} + links to all ${accounts.length} case(s) in the run)`)}`);
     }
     return;
   }
@@ -671,9 +672,13 @@ async function cmdRequest(flags: Record<string, string | boolean>): Promise<void
     const ok = allReqs.filter((q) => q.status === "requested").length;
     const failed = allReqs.filter((q) => q.status === "failed").length;
     log.ok(`${ok} quota increase(s) submitted${failed ? `, ${c.red(String(failed))} failed` : ""}.`);
-    // Final step: cross-reference every case created in this run so each one
-    // links to its siblings. Best-effort — failures warn, they don't fail the run.
-    await postCrossReferenceComments(manifest, model, region, accessToken, ssoRegion, role);
+    // Service Quotas opens the backing case a little after the request returns,
+    // so the per-account loop often can't stamp the case yet. Wait for the cases
+    // to open (filling in their caseIds), then post the batch comment — which
+    // carries the business justification (Service Quotas gives no way to attach
+    // one to the cases it opens) and links to every sibling case in the run.
+    await waitForPendingCaseIds(manifest, accessToken, ssoRegion, role);
+    await postCrossReferenceComments(manifest, model, region, accessToken, ssoRegion, role, justification, startUrl);
 
     const roleHint = role ? ` --role ${role}` : "";
     log.plain(`Manifest saved. Act on this run later with:`);
@@ -806,44 +811,46 @@ async function postCrossReferenceComments(
   accessToken: string,
   ssoRegion: string,
   role: string | undefined,
+  justification: string,
+  startUrl: string,
 ): Promise<void> {
   // Collect the created cases (caseId present, status "requested"), plus the
   // legacy per-account shape, deduped by accountId:caseId (mirrors manifestCases).
   const seen = new Set<string>();
-  const cases: (CrossReferenceCase & { displayId?: string })[] = [];
-  const add = (accountId: string, caseId: string | undefined, displayId?: string) => {
+  const cases: CrossReferenceCase[] = [];
+  const add = (accountId: string, caseId: string | undefined, displayId?: string, roleName?: string) => {
     if (!caseId) return;
     const key = `${accountId}:${caseId}`;
     if (seen.has(key)) return;
     seen.add(key);
-    cases.push({ accountId, caseId, displayId });
+    cases.push({ accountId, caseId, displayId, roleName });
   };
   for (const rec of manifest.cases) {
     for (const q of rec.quotaRequests || []) {
-      if (q.status === "requested") add(rec.accountId, q.caseId, q.displayId);
+      if (q.status === "requested") add(rec.accountId, q.caseId, q.displayId, rec.roleName);
     }
-    if (rec.status === "created") add(rec.accountId, rec.caseId); // legacy
+    if (rec.status === "created") add(rec.accountId, rec.caseId, undefined, rec.roleName); // legacy
   }
 
-  if (cases.length < 2) {
-    log.plain(c.dim(`Cross-reference skipped — only ${cases.length} case created (need 2+).`));
+  if (!cases.length) {
+    log.plain(c.dim("Batch comment skipped — no backing case was created."));
     return;
   }
 
-  const blurb = buildCrossReferenceComment({ runId: manifest.runId, cases, model, region });
+  const blurb = buildCrossReferenceComment({ runId: manifest.runId, cases, model, region, justification, startUrl });
 
   let done = 0;
   for (const cs of cases) {
     try {
       const { credentials } = await getAccountCredentials(accessToken, ssoRegion, cs.accountId, role);
       await addComment(supportClient(credentials), cs.caseId, blurb);
-      log.ok(`Account ${cs.accountId}: cross-referenced case ${cs.caseId}`);
+      log.ok(`Account ${cs.accountId}: posted batch comment on case ${cs.caseId}`);
       done++;
     } catch (e: any) {
-      log.warn(`Account ${cs.accountId}: could not post cross-reference comment on ${cs.caseId} — ${e?.message || e}`);
+      log.warn(`Account ${cs.accountId}: could not post batch comment on ${cs.caseId} — ${e?.message || e}`);
     }
   }
-  log.ok(`Cross-referenced ${done}/${cases.length} case(s).`);
+  log.ok(`Posted batch comment (justification + case links) on ${done}/${cases.length} case(s).`);
 }
 
 // ── shared: resolve the backing cases of a run, per account ───────────────────
@@ -954,6 +961,34 @@ async function refreshPendingCaseIds(
   }
   void marker;
   if (changed) saveManifest(manifest);
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// After the request loop, Service Quotas opens each backing case a little after
+// the request returns. Poll for those cases to open (via refreshPendingCaseIds,
+// which fills in the caseIds and stamps the marker) so the batch comment can be
+// posted onto real cases. Bounded: ~5 min (15 polls, 20s apart). Any case still
+// pending after that is left for a later list/comment/close to pick up — this
+// never fails the run.
+async function waitForPendingCaseIds(
+  manifest: RunManifest,
+  accessToken: string,
+  ssoRegion: string,
+  role: string | undefined,
+): Promise<void> {
+  const MAX_POLLS = 15;
+  const INTERVAL_MS = 20_000;
+  if (!hasPendingCaseIds(manifest)) return;
+  log.step("Waiting for AWS to open the backing support case(s) so the justification can be posted…");
+  for (let i = 0; i < MAX_POLLS && hasPendingCaseIds(manifest); i++) {
+    await sleep(INTERVAL_MS);
+    await refreshPendingCaseIds(manifest, accessToken, ssoRegion, role);
+  }
+  if (hasPendingCaseIds(manifest)) {
+    log.warn("Some cases haven't opened yet, so the justification comment can't be posted on them.");
+    log.warn(`Post it once they open with:  ${INVOKE} comment --run ${manifest.runId} --body "…"`);
+  }
 }
 
 // Query AWS for the live state (pending / resolved) of each submitted request

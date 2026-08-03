@@ -49,12 +49,17 @@ export function quotaLines(quotas: QuotaRequest): string[] {
 }
 
 // One case in a run, as needed to build a cross-reference link. displayId (the
-// numeric id in the console URL) yields a clickable link; without it we fall
-// back to the internal caseId as plain text.
+// numeric id in the console URL) plus the SSO role yields a clickable
+// access-portal deep link; without them we fall back to the plain console URL,
+// or the internal caseId as text. The internal caseId is always listed as the
+// case's stable identifier (AWS Support cases have no ARN).
 export interface CrossReferenceCase {
   accountId: string;
   caseId: string;
   displayId?: string;
+  // SSO role used to reach this account, needed to build the access-portal deep
+  // link. Absent → fall back to the plain console URL.
+  roleName?: string;
 }
 
 // Console URL for a support case, keyed off its numeric display id.
@@ -84,18 +89,22 @@ export function buildSsoShortcutUrl(input: {
     + `&destination=${encodeURIComponent(destination)}`;
 }
 
-// A plain-text blurb, posted onto every case created by a run, that points the
-// reader at the sibling cases filed together in the same batch. Kept plain-text
-// and in the same tone as buildBody/buildMarkerComment (Support comments render
-// as plain text). Each sibling lists its account id plus a console link when a
-// display id is known, or the internal case id as text otherwise.
+// The batch comment posted onto every case created by a run. It carries the
+// business justification (Service Quotas gives no way to attach one to the cases
+// it opens, so it lives here) and points the reader at the sibling cases filed
+// together in the same batch. Kept plain-text and in the same tone as
+// buildBody/buildMarkerComment (Support comments render as plain text). Each
+// sibling lists its account id, an access-portal deep link (SSO role + display
+// id) or plain console URL, and the internal case id as the stable identifier.
 export function buildCrossReferenceComment(input: {
   runId: string;
   cases: CrossReferenceCase[];
   model: BedrockModel;
   region: string;
+  justification?: string;
+  startUrl?: string;
 }): string {
-  const { runId, cases, model, region } = input;
+  const { runId, cases, model, region, justification, startUrl } = input;
   const lines: string[] = [
     "This support case is part of a batch of Amazon Bedrock quota-increase",
     "requests filed together by the bedrock-quota-increase tool.",
@@ -103,14 +112,31 @@ export function buildCrossReferenceComment(input: {
     `Run ID: ${runId}`,
     `Model / profile: ${model.id}`,
     `Region: ${region}`,
-    "",
-    `Related cases in this batch (${cases.length}, including this one):`,
   ];
+
+  // \n sequences in a justification passed on the command line arrive literally;
+  // turn them into real newlines so the case reads cleanly (mirrors buildBody).
+  const cleanJustification = (justification || "").replace(/\\n/g, "\n").trim();
+  if (cleanJustification) {
+    lines.push("", "Business justification:", cleanJustification);
+  }
+
+  lines.push("", `Related cases in this batch (${cases.length}, including this one):`);
   for (const cs of cases) {
-    if (cs.displayId) {
-      lines.push(`  • Account ${cs.accountId}: ${caseConsoleUrl(cs.displayId)}`);
+    // Prefer the personalized access-portal deep link (needs the run's start
+    // url, the case's display id, and the SSO role); fall back to the plain
+    // console URL, then to a bare note. The internal case id is always shown.
+    const link =
+      startUrl && cs.displayId && cs.roleName
+        ? buildSsoShortcutUrl({ startUrl, accountId: cs.accountId, roleName: cs.roleName, displayId: cs.displayId })
+        : cs.displayId
+          ? caseConsoleUrl(cs.displayId)
+          : undefined;
+    lines.push(`  • Account ${cs.accountId} — case ${cs.caseId}`);
+    if (link) {
+      lines.push(`    ${link}`);
     } else {
-      lines.push(`  • Account ${cs.accountId}: case ${cs.caseId} (viewing requires signing in to that account)`);
+      lines.push(`    (viewing requires signing in to that account)`);
     }
   }
   return lines.join("\n");
