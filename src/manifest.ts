@@ -58,34 +58,28 @@ export type QuotaRequestStatus =
   | "failed"      // submission failed
   | "skipped";    // not attempted
 
-// The *AWS-side* disposition of a request, distinct from QuotaRequestStatus
-// (which only records what this tool did). Derived live from the Service Quotas
-// RequestStatus and/or the backing Support case's status; never persisted,
-// because it changes over time on AWS's side. `unknown` means we couldn't (or
-// didn't) fetch it.
-export type CaseDisposition =
-  | "pending"          // submitted; AWS reviewing, no decision yet
-  | "pending-customer" // waiting on a response from the customer
-  | "approved"         // increase granted
-  | "denied"           // increase refused
-  | "resolved"         // backing case closed/resolved
-  | "unknown";
+// The *AWS-side* lifecycle state of a request's backing case, distinct from
+// QuotaRequestStatus (which only records what this tool did). Derived live from
+// the Service Quotas RequestStatus and/or the backing Support case's status.
+//
+// Deliberately only two real states: AWS does NOT surface the approve/deny
+// decision for a Bedrock quota case through either API — Service Quotas reports
+// only CASE_OPENED / CASE_CLOSED, and the Support case status only tracks the
+// case lifecycle. So the honest, reliable signal is simply whether the case is
+// still open (`pending`) or has been closed (`resolved`). `unknown` means we
+// couldn't reach AWS to check.
+export type CaseState = "pending" | "resolved" | "unknown";
 
-// When two sources disagree (Service Quotas RequestStatus vs. Support case
-// status), keep the more informative one. A firm decision (denied/approved)
-// beats an actionable-but-open state (pending-customer), which beats a merely
-// closed case, which beats plain pending, which beats unknown.
-const DISPOSITION_RANK: Record<CaseDisposition, number> = {
-  denied: 5,
-  approved: 4,
-  "pending-customer": 3,
+// Combine the state from two sources (Service Quotas + Support). A closed case
+// is terminal, so `resolved` wins; a definite `pending` beats `unknown`.
+const CASE_STATE_RANK: Record<CaseState, number> = {
   resolved: 2,
   pending: 1,
   unknown: 0,
 };
 
-export function mergeDispositions(a: CaseDisposition, b: CaseDisposition): CaseDisposition {
-  return DISPOSITION_RANK[a] >= DISPOSITION_RANK[b] ? a : b;
+export function mergeCaseStates(a: CaseState, b: CaseState): CaseState {
+  return CASE_STATE_RANK[a] >= CASE_STATE_RANK[b] ? a : b;
 }
 
 // One quota-increase request within an account: what we asked for, how, and the
@@ -116,6 +110,10 @@ export interface QuotaRequestRecord {
 export interface CaseRecord {
   accountId: string;
   accountName?: string;
+  // The SSO role we assumed to reach this account. Recorded so later commands
+  // can rebuild the AWS access-portal deep link to each backing case without
+  // re-resolving the role. Absent on older manifests / accounts we never reached.
+  roleName?: string;
   // The quota-increase requests issued for this account.
   quotaRequests?: QuotaRequestRecord[];
   // Result of ensuring the AWS Marketplace subscription for the model in this

@@ -97,8 +97,12 @@ is the orchestrator; each other file is one seam:
   comment/resolve + marker read). The Support client is **always** built in
   `us-east-1` (global endpoint) regardless of `--region`. `findBedrockLimitCategory`
   discovers the category via `DescribeServices` rather than hardcoding it.
-- **`caseBody.ts`** — builds the case subject, body, and the `[bqi:run=<id>]`
-  marker comment.
+- **`caseBody.ts`** — builds the case subject, body, the `[bqi:run=<id>]`
+  marker comment, and the AWS access-portal deep link to a case
+  (`buildSsoShortcutUrl`: `<start-url>/#/console?account_id=…&role_name=…&destination=…`),
+  which `request`/`list`/`close` print so an operator can click straight into the
+  backing case (needs the run's `--start-url`, the SSO role used, and the case's
+  numeric display id — any missing piece suppresses the link).
 - **`models.ts`** — the Bedrock model catalog (`id` + `label` + optional
   `foundationModelId`; **no default quota numbers**) for the interactive picker.
   A **convenience, not an allow-list**: any `--llm <id>` not in the catalog is

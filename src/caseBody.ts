@@ -62,6 +62,28 @@ export function caseConsoleUrl(displayId: string): string {
   return `https://support.console.aws.amazon.com/support/home#/case/?displayId=${displayId}`;
 }
 
+// A personalized AWS access-portal (SSO) deep link that, when the operator
+// clicks it, signs them into the given account with the given role and lands
+// them directly on the support case in the console. Built from the run's
+// --start-url (its host carries the SSO directory), the account id, the SSO role
+// we used, and the case's numeric display id. The support console lives in the
+// global us-east-1 endpoint, so the destination is always region=us-east-1
+// regardless of the Bedrock target region. Callers only build this once all
+// four pieces are known (see logCaseShortcut in cli.ts).
+export function buildSsoShortcutUrl(input: {
+  startUrl: string;
+  accountId: string;
+  roleName: string;
+  displayId: string;
+}): string {
+  const { startUrl, accountId, roleName, displayId } = input;
+  const destination =
+    `https://support.console.aws.amazon.com/support/home?region=us-east-1#/case/?displayId=${displayId}&language=en`;
+  const base = `${startUrl.replace(/\/+$/, "")}/#/console`;
+  return `${base}?account_id=${accountId}&role_name=${encodeURIComponent(roleName)}`
+    + `&destination=${encodeURIComponent(destination)}`;
+}
+
 // A plain-text blurb, posted onto every case created by a run, that points the
 // reader at the sibling cases filed together in the same batch. Kept plain-text
 // and in the same tone as buildBody/buildMarkerComment (Support comments render

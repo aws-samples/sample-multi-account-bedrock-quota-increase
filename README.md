@@ -242,12 +242,19 @@ manifest is saved under `~/.bqi/runs/<id>.json`. Use either the run ID or the
 manifest:
 
 ```bash
-# See the cases (offline — tool-side state only)
+# See the cases (offline — last-known state from the local manifest)
 npx github:aws-samples/sample-multi-account-bedrock-quota-increase list --run "$RUN_ID"
 
-# See the cases with their live AWS-side disposition (approved / denied /
-# needs-response / resolved / pending). Adding --start-url logs in and queries
-# Service Quotas + Support for each request's current status.
+# See the cases with their live case state (pending / resolved). Adding
+# --start-url logs in, queries Service Quotas + Support for each request's
+# current state, and refreshes the local manifest to match — so a case AWS
+# closed shows as resolved even if you never ran `close` yourself.
+#
+# Note: AWS does not expose the approve/deny *decision* for a Bedrock quota
+# case through either API, so `list` reports only whether the backing case is
+# still open (pending) or closed (resolved), not whether it was granted. A
+# pending case may be in review or waiting on a reply from you — open the
+# support case in the AWS console for the decision or any pending questions.
 npx github:aws-samples/sample-multi-account-bedrock-quota-increase list \
   --start-url "$URL" --run "$RUN_ID"
 
