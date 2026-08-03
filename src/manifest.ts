@@ -110,6 +110,10 @@ export interface QuotaRequestRecord {
 export interface CaseRecord {
   accountId: string;
   accountName?: string;
+  // The SSO role we assumed to reach this account. Recorded so later commands
+  // can rebuild the AWS access-portal deep link to each backing case without
+  // re-resolving the role. Absent on older manifests / accounts we never reached.
+  roleName?: string;
   // The quota-increase requests issued for this account.
   quotaRequests?: QuotaRequestRecord[];
   // Result of ensuring the AWS Marketplace subscription for the model in this

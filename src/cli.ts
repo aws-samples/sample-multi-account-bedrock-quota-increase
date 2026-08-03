@@ -35,7 +35,7 @@ import {
 import { ensureSubscription, type SubscriptionResult } from "./bedrock.js";
 import {
   buildSubject, buildBody, buildMarkerComment, buildCrossReferenceComment,
-  type CrossReferenceCase,
+  buildSsoShortcutUrl, type CrossReferenceCase,
 } from "./caseBody.js";
 import {
   serviceQuotasClient, listBedrockQuotas, findQuotaByCode, rankCandidates,
@@ -579,7 +579,9 @@ async function cmdRequest(flags: Record<string, string | boolean>): Promise<void
 
     let credentials: AccountCredentials["credentials"] | undefined;
     try {
-      ({ credentials } = await getAccountCredentials(accessToken, ssoRegion, accountId, role));
+      const acct = await getAccountCredentials(accessToken, ssoRegion, accountId, role);
+      credentials = acct.credentials;
+      record.roleName = acct.roleName;
     } catch (e: any) {
       const msg = e?.message || String(e);
       record.error = msg;
@@ -616,7 +618,7 @@ async function cmdRequest(flags: Record<string, string | boolean>): Promise<void
     if (doRequest) {
       await submitQuotaRequests(
         accountId, label(accountId), credentials, region, model, quotas, quotaTargets, justification,
-        ccEmails, runId, record, manifest,
+        ccEmails, runId, record, manifest, startUrl, record.roleName,
       );
     }
 
@@ -667,6 +669,8 @@ async function submitQuotaRequests(
   runId: string,
   record: CaseRecord,
   manifest: RunManifest,
+  startUrl: string,
+  roleName: string | undefined,
 ): Promise<void> {
   const sq = serviceQuotasClient(region, credentials);
   const support = supportClient(credentials);
@@ -712,6 +716,7 @@ async function submitQuotaRequests(
           } catch (e: any) {
             log.warn(`Account ${accountLabel}: could not stamp marker on case ${rec.caseId} — ${e?.message || e}`);
           }
+          logCaseShortcut(startUrl, accountId, roleName, rec.displayId);
         }
       } catch (e: any) {
         rec.error = e?.message || String(e);
@@ -737,6 +742,13 @@ async function submitQuotaRequests(
       // the comment too so rediscovery-by-comment works uniformly.
       try { await addComment(support, caseId, markerComment); } catch { /* subject still carries marker */ }
       log.ok(`Account ${accountLabel}: support case ${caseId} for non-adjustable quota(s)`);
+      // Self-opened cases don't come with a display id — recover it so the
+      // access-portal shortcut resolves, and persist it on the records below.
+      const fallbackDisplayId = await caseDisplayId(support, caseId);
+      logCaseShortcut(startUrl, accountId, roleName, fallbackDisplayId);
+      for (const rec of record.quotaRequests!) {
+        if (rec.method === "support-case" && fallbackDisplayId) rec.displayId = fallbackDisplayId;
+      }
     } catch (e: any) {
       log.err(`Account ${accountLabel}: could not open fallback support case — ${e?.message || e}`);
     }
@@ -805,7 +817,10 @@ async function postCrossReferenceComments(
 }
 
 // ── shared: resolve the backing cases of a run, per account ───────────────────
-interface ResolvedCase { accountId: string; caseId: string; }
+// roleName/displayId are only populated on the marker-rediscovery path (which
+// holds live credentials and case details); the manifest path leaves them unset
+// because callers there read role/displayId straight off the manifest records.
+interface ResolvedCase { accountId: string; caseId: string; roleName?: string; displayId?: string; }
 
 // Refresh any Service Quotas requests in the manifest that don't yet have a
 // backing CaseId — AWS may open the case a little after the request. Fills in
@@ -837,23 +852,30 @@ async function resolveRunCases(
   const found: ResolvedCase[] = [];
   for (const accountId of accounts) {
     try {
-      const { credentials } = await getAccountCredentials(accessToken, ssoRegion, accountId, role);
+      const { credentials, roleName } = await getAccountCredentials(accessToken, ssoRegion, accountId, role);
       const support = supportClient(credentials);
       const seen = new Set<string>();
 
-      // 1) Subject marker (cases we opened directly).
+      // 1) Subject marker (cases we opened directly). displayId comes straight
+      //    off the case details these already return.
       for (const cs of await findCasesByMarker(support, marker)) {
-        if (cs.caseId && !seen.has(cs.caseId)) { seen.add(cs.caseId); found.push({ accountId, caseId: cs.caseId }); }
+        if (cs.caseId && !seen.has(cs.caseId)) {
+          seen.add(cs.caseId);
+          found.push({ accountId, caseId: cs.caseId, roleName, displayId: cs.displayId });
+        }
       }
       // 2) Comment marker on cases Service Quotas opened. Scan the account's
       //    Bedrock quota-change history for candidate cases, then check comments.
+      //    The change's CaseId is the numeric display id, so keep it for the link.
       const sq = serviceQuotasClient(flagStr(flags, "region") || "us-east-1", credentials);
       for (const change of await listChangeHistory(sq)) {
-        const caseId = change.CaseId;
-        if (!caseId || seen.has(caseId)) continue;
+        const displayId = change.CaseId;
+        if (!displayId) continue;
+        const caseId = await toSupportCaseId(support, displayId).catch(() => displayId);
+        if (seen.has(caseId)) continue;
         if (await caseHasMarker(support, caseId, marker)) {
           seen.add(caseId);
-          found.push({ accountId, caseId });
+          found.push({ accountId, caseId, roleName, displayId });
         }
       }
     } catch (e: any) {
@@ -978,6 +1000,45 @@ function formatCaseState(state: CaseState): string {
   }
 }
 
+// Print the AWS access-portal deep link to a backing case — click it to sign
+// into that account with the role we used and land on the case in the console.
+// Silent unless we have all three pieces: the run's --start-url (its host is the
+// SSO directory), the SSO role we assumed for the account, and the case's
+// numeric display id. Any missing piece (e.g. `list` run offline with no
+// --start-url, or a self-opened case whose display id we never captured) simply
+// suppresses the link rather than printing a broken one.
+function logCaseShortcut(
+  startUrl: string | undefined,
+  accountId: string,
+  roleName: string | undefined,
+  displayId: string | undefined,
+): void {
+  if (!startUrl || !roleName || !displayId) return;
+  log.plain(`      ${c.dim("Shortcut:")} ${c.cyan(buildSsoShortcutUrl({ startUrl, accountId, roleName, displayId }))}`);
+}
+
+// The numeric display id recorded in the manifest for a given internal case id,
+// if any request captured it. Lets `close` build the shortcut without an extra
+// DescribeCases call when the manifest already knows the display id.
+function displayIdForCase(m: RunManifest, caseId: string): string | undefined {
+  for (const rec of m.cases) {
+    for (const q of rec.quotaRequests || []) {
+      if (q.caseId === caseId && q.displayId) return q.displayId;
+    }
+  }
+  return undefined;
+}
+
+// Best-effort DescribeCases to recover a case's numeric display id. Returns
+// undefined on any failure so a missing link never breaks the calling command.
+async function caseDisplayId(support: ReturnType<typeof supportClient>, caseId: string): Promise<string | undefined> {
+  try {
+    return (await describeCase(support, caseId))?.displayId;
+  } catch {
+    return undefined;
+  }
+}
+
 // ── list ─────────────────────────────────────────────────────────────────────
 async function cmdList(flags: Record<string, string | boolean>): Promise<void> {
   const runId = await resolveRunId(flags);
@@ -1031,7 +1092,10 @@ async function cmdList(flags: Record<string, string | boolean>): Promise<void> {
           : formatCaseState(requestCaseState(q, liveStates));
         const via = q.method === "service-quotas" ? c.dim("sq") : c.dim("case");
         log.plain(`      ${DIMENSION_LABEL[q.dimension]} → ${q.desiredValue.toLocaleString("en-US")}  ${state}  ${via}  ${q.caseId || q.requestId || ""}${q.error ? c.red(" " + q.error) : ""}`);
-        if (q.caseId) out(`${rec.accountId} ${q.caseId}`);
+        if (q.caseId) {
+          out(`${rec.accountId} ${q.caseId}`);
+          logCaseShortcut(startUrl, rec.accountId, rec.roleName, q.displayId);
+        }
       }
     }
     const breakdown = caseBreakdown(manifest.cases);
@@ -1055,6 +1119,7 @@ async function cmdList(flags: Record<string, string | boolean>): Promise<void> {
   for (const cs of cases) {
     log.plain(`  ${cs.accountId}  ${cs.caseId}`);
     out(`${cs.accountId} ${cs.caseId}`);
+    logCaseShortcut(startUrl, cs.accountId, cs.roleName, cs.displayId);
   }
 }
 
@@ -1120,9 +1185,14 @@ async function cmdClose(flags: Record<string, string | boolean>): Promise<void> 
   let done = 0;
   for (const cs of cases) {
     try {
-      const { credentials } = await getAccountCredentials(accessToken, ssoRegion, cs.accountId, role);
-      await resolveCase(supportClient(credentials), cs.caseId);
+      const { credentials, roleName } = await getAccountCredentials(accessToken, ssoRegion, cs.accountId, role);
+      const support = supportClient(credentials);
+      await resolveCase(support, cs.caseId);
       log.ok(`Account ${cs.accountId}: resolved ${cs.caseId}`);
+      // Point the operator at the just-closed case in the console. Prefer the
+      // display id the manifest already knows; recover it live otherwise.
+      const displayId = (manifest && displayIdForCase(manifest, cs.caseId)) || await caseDisplayId(support, cs.caseId);
+      logCaseShortcut(startUrl, cs.accountId, roleName, displayId);
       done++;
       if (manifest) stampResolved(manifest, cs.caseId, nowIso);
     } catch (e: any) {
