@@ -549,6 +549,7 @@ async function cmdRequest(flags: Record<string, string | boolean>): Promise<void
     if (doRequest) {
       log.plain(`${c.dim("would wait for the backing case(s) to open, then post a batch comment on each")}`);
       log.plain(`${c.dim(`  (${justification.trim() ? "business justification" : "no justification given"} + links to all ${accounts.length} case(s) in the run)`)}`);
+      log.plain(`${c.dim("would print each opened case with its access-portal shortcut link")}`);
     }
     return;
   }
@@ -679,6 +680,11 @@ async function cmdRequest(flags: Record<string, string | boolean>): Promise<void
     // one to the cases it opens) and links to every sibling case in the run.
     await waitForPendingCaseIds(manifest, accessToken, ssoRegion, role);
     await postCrossReferenceComments(manifest, model, region, accessToken, ssoRegion, role, justification, startUrl);
+
+    // List every backing case with its access-portal shortcut so the operator
+    // can click straight in. Cases that haven't opened yet (no displayId) are
+    // noted without a link.
+    logRunCaseShortcuts(manifest, startUrl);
 
     const roleHint = role ? ` --role ${role}` : "";
     log.plain(`Manifest saved. Act on this run later with:`);
@@ -1080,6 +1086,30 @@ function logCaseShortcut(
 ): void {
   if (!startUrl || !roleName || !displayId) return;
   log.plain(`      ${c.dim("Shortcut:")} ${c.cyan(buildSsoShortcutUrl({ startUrl, accountId, roleName, displayId }))}`);
+}
+
+// End-of-run summary: every backing case created by the run, with its
+// account/internal-case-id and an access-portal shortcut when the display id and
+// SSO role are known. Cases AWS hasn't opened yet are listed without a link.
+function logRunCaseShortcuts(manifest: RunManifest, startUrl: string): void {
+  const rows: { accountId: string; caseId: string; roleName?: string; displayId?: string }[] = [];
+  const seen = new Set<string>();
+  for (const rec of manifest.cases) {
+    for (const q of rec.quotaRequests || []) {
+      if (q.status !== "requested" || !q.caseId) continue;
+      const key = `${rec.accountId}:${q.caseId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push({ accountId: rec.accountId, caseId: q.caseId, roleName: rec.roleName, displayId: q.displayId });
+    }
+  }
+  if (!rows.length) return;
+  log.plain("");
+  log.plain(`Support case(s) opened by this run:`);
+  for (const r of rows) {
+    log.plain(`  ${r.accountId}  ${r.caseId}`);
+    logCaseShortcut(startUrl, r.accountId, r.roleName, r.displayId);
+  }
 }
 
 // The numeric display id recorded in the manifest for a given internal case id,
