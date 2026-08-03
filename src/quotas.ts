@@ -81,21 +81,32 @@ export function findQuotaByCode(quotas: ServiceQuota[], quotaCode: string): Serv
 // There is no stable id-to-quota mapping, so we score candidate names against
 // the chosen model and the requested dimension, then let the user confirm.
 
-// Pull comparable tokens out of a model: its label and id, with version numbers
-// normalized so "4-8"/"4.8"/"4_8" all compare equal.
-function modelTokens(model: BedrockModel): string[] {
-  const raw = `${model.label} ${model.id}`.toLowerCase();
-  const tokens = raw.match(/[a-z0-9]+(?:[.\-_][0-9]+)*/g) || [];
-  const out = new Set<string>();
+// Noise words that appear in nearly every label/quota name (provider, scope,
+// and structural words). Dropped from both sides of the comparison so the
+// model *family* ("sonnet"/"opus"/"haiku") and *version* ("5"/"4.8") are what
+// actually discriminate — otherwise a Sonnet request ties with every Opus one.
+const NOISE_TOKENS = new Set([
+  "the", "for", "model", "inference", "profile", "us", "global", "anthropic",
+  "amazon", "v1", "v2", "claude", "cross", "region", "endpoint", "bedrock",
+  "mantle", "tokens", "token", "per", "minute", "requests", "input", "output",
+  "on", "demand",
+]);
+
+// Split free text into comparable tokens, normalizing version numbers so
+// "4-8"/"4.8"/"4_8" all compare equal, and dropping the noise words above.
+function tokenize(raw: string): string[] {
+  const tokens = raw.toLowerCase().match(/[a-z0-9]+(?:[.\-_][0-9]+)*/g) || [];
+  const out: string[] = [];
   for (const t of tokens) {
-    // Drop noise words that appear in nearly every label/quota name.
-    if (["the", "for", "model", "inference", "profile", "us", "global", "anthropic", "amazon", "v1", "v2"].includes(t)) {
-      // keep provider/version-ish tokens out of the *scoring* set, but still
-      // let short model-family words through below.
-    }
-    out.add(t.replace(/[\-_]/g, "."));
+    const norm = t.replace(/[\-_]/g, ".");
+    if (!NOISE_TOKENS.has(norm)) out.push(norm);
   }
-  return [...out];
+  return out;
+}
+
+// The discriminating tokens for a model: its label and id, de-noised.
+function modelTokens(model: BedrockModel): string[] {
+  return [...new Set(tokenize(`${model.label} ${model.id}`))];
 }
 
 // Does a quota name describe the given dimension? RPM vs TPM, and for TPM
@@ -121,11 +132,13 @@ function nameMatchesDimension(name: string, dim: QuotaDimension): boolean {
 // by the model id ("global." → Global cross-region; "us."/regional → Cross-region).
 function scoreModelMatch(name: string, model: BedrockModel, tokens: string[]): number {
   const n = name.toLowerCase();
+  // Compare whole tokens, not substrings: "us" must not match inside "opus",
+  // and the single-char version "5" must still count.
+  const nameTokens = new Set(tokenize(name));
   let score = 0;
   let matched = 0;
   for (const t of tokens) {
-    if (t.length < 2) continue;
-    if (n.includes(t)) {
+    if (nameTokens.has(t)) {
       matched++;
       // Version-ish tokens (contain a digit) are the most discriminating.
       score += /[0-9]/.test(t) ? 3 : 1;
