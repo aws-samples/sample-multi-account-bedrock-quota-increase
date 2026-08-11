@@ -68,6 +68,10 @@ export interface SubscriptionResult {
 // exact wording is irrelevant — we only care that Converse returns a result.
 const PROBE_PROMPT = "Reply with only: ok";
 const PROBE_MAX_TOKENS = 5;
+// Transient-error retry policy for the probe. Delay grows linearly with the
+// attempt index (0ms, 1.5s, 3s), so total added wait is bounded at ~4.5s.
+const PROBE_MAX_ATTEMPTS = 3;
+const PROBE_RETRY_DELAY_MS = 1500;
 
 // Resolve the inference-profile id to invoke for `foundationModelId` in the
 // client's region. Base model ids are usually rejected for on-demand invocation
@@ -142,8 +146,31 @@ function categorizeInvokeError(e: any): string {
   if (name.includes("ThrottlingException") || /throttl/i.test(msg)) {
     return `Throttled while probing invocation; try again. (${msg})`;
   }
+  if (isTransientInvokeError(e)) {
+    return `Transient Bedrock server-side error while probing invocation (not an access problem) — the quota request still proceeds; retry the invoke later to confirm access. (${msg})`;
+  }
   return msg;
 }
+
+// Whether an invoke error is a transient server-side/throttling condition worth
+// retrying. Bedrock surfaces newly-launched-model capacity pressure as
+// ServiceUnavailableException ("Bedrock is unable to process your request") and
+// InternalServerException; both are 5xx and safe to retry. Throttling is
+// likewise retryable. We match on name AND message because the SDK sometimes
+// only carries the text.
+function isTransientInvokeError(e: any): boolean {
+  const name = e?.name || e?.__type || "";
+  const msg = e?.message || String(e);
+  return (
+    name.includes("ServiceUnavailable") ||
+    name.includes("InternalServer") ||
+    name.includes("ThrottlingException") ||
+    /unable to process your request/i.test(msg) ||
+    /throttl/i.test(msg)
+  );
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 // Ensure `foundationModelId` can be invoked in the client's region by actually
 // invoking it once. On a fresh account this first call also creates the AWS
@@ -168,15 +195,29 @@ export async function ensureSubscription(
     const profileId = await resolveInferenceProfileId(control, foundationModelId);
     const invokeId = profileId ?? foundationModelId;
 
-    await runtime.send(
-      new ConverseCommand({
-        modelId: invokeId,
-        messages: [{ role: "user", content: [{ text: PROBE_PROMPT }] }],
-        inferenceConfig: { maxTokens: PROBE_MAX_TOKENS },
-      }),
-    );
-
-    return { outcome: "subscribed", invokedVia: invokeId };
+    // Retry the probe on transient server-side errors. A freshly launched model
+    // (e.g. Claude Sonnet 5) intermittently returns ServiceUnavailableException
+    // ("Bedrock is unable to process your request") under backend capacity
+    // pressure; a short backoff usually clears it. Non-transient errors (access
+    // denied, invalid id, EOL) throw out immediately — retrying them is useless.
+    let lastErr: any;
+    for (let attempt = 0; attempt < PROBE_MAX_ATTEMPTS; attempt++) {
+      if (attempt > 0) await sleep(PROBE_RETRY_DELAY_MS * attempt);
+      try {
+        await runtime.send(
+          new ConverseCommand({
+            modelId: invokeId,
+            messages: [{ role: "user", content: [{ text: PROBE_PROMPT }] }],
+            inferenceConfig: { maxTokens: PROBE_MAX_TOKENS },
+          }),
+        );
+        return { outcome: "subscribed", invokedVia: invokeId };
+      } catch (e: any) {
+        lastErr = e;
+        if (!isTransientInvokeError(e)) throw e;
+      }
+    }
+    throw lastErr;
   } catch (e: any) {
     return { outcome: "failed", error: categorizeInvokeError(e) };
   }
