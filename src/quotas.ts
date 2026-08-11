@@ -94,14 +94,38 @@ const NOISE_TOKENS = new Set([
 
 // Split free text into comparable tokens, normalizing version numbers so
 // "4-8"/"4.8"/"4_8" all compare equal, and dropping the noise words above.
+// A version number joined to a family word by a separator ("sonnet-4-6") is
+// split into two tokens ("sonnet" + "4.6"). Without this, the glued
+// "sonnet.4.6" from a hyphenated model id could never equal the
+// space-separated "sonnet"/"5" that AWS quota names use, so the family word
+// would never match and the version — the real discriminator between model
+// generations — would be invisible to the scorer. A version with no separator
+// ("v1") is left intact so it still lands in NOISE_TOKENS.
 function tokenize(raw: string): string[] {
   const tokens = raw.toLowerCase().match(/[a-z0-9]+(?:[.\-_][0-9]+)*/g) || [];
   const out: string[] = [];
   for (const t of tokens) {
-    const norm = t.replace(/[\-_]/g, ".");
-    if (!NOISE_TOKENS.has(norm)) out.push(norm);
+    const split = t.match(/^([a-z]+)[.\-_]([0-9][0-9.\-_]*)$/);
+    const parts = split ? [split[1]!, split[2]!] : [t];
+    for (const p of parts) {
+      const norm = p.replace(/[\-_]/g, ".");
+      if (!NOISE_TOKENS.has(norm)) out.push(norm);
+    }
   }
   return out;
+}
+
+// Version tokens are those carrying a digit ("4.8", "5", "4.5.20251001").
+function isVersionToken(t: string): boolean {
+  return /[0-9]/.test(t);
+}
+
+// Two version tokens are compatible if equal or one is a dotted prefix of the
+// other ("4.5" ~ "4.5.20251001"), so a coarse catalog/profile version still
+// matches a more specific model id. Different generations ("4.6" vs "5") are
+// NOT compatible.
+function versionsCompatible(a: string, b: string): boolean {
+  return a === b || a.startsWith(b + ".") || b.startsWith(a + ".");
 }
 
 // The discriminating tokens for a model: its label and id, de-noised.
@@ -145,6 +169,21 @@ function scoreModelMatch(name: string, model: BedrockModel, tokens: string[]): n
     }
   }
   if (matched === 0) return 0;
+
+  // Version gate: the version number is the real discriminator between model
+  // generations. If BOTH the model and the quota name carry a version, reject
+  // the candidate unless the versions are compatible — otherwise a same-family
+  // request (e.g. Sonnet 4.6) would silently land on a different generation's
+  // quota (Sonnet 5) merely because the family word "sonnet" matched.
+  const modelVersions = tokens.filter(isVersionToken);
+  const nameVersions = [...nameTokens].filter(isVersionToken);
+  if (
+    modelVersions.length &&
+    nameVersions.length &&
+    !modelVersions.some((mv) => nameVersions.some((nv) => versionsCompatible(mv, nv)))
+  ) {
+    return 0;
+  }
 
   // Scope preference from the model id's regional prefix.
   const wantsGlobal = model.id.startsWith("global.");
