@@ -63,8 +63,9 @@ quota(s) and asks the user to approve/edit before submitting.
 
 ## Architecture
 
-Single-process, dependency-light TypeScript ESM (only the `@aws-sdk/*` clients:
-support, service-quotas, sso, sso-oidc, bedrock, bedrock-runtime). `src/cli.ts`
+Single-process, dependency-light TypeScript ESM. Runtime deps are the
+`@aws-sdk/*` clients (support, service-quotas, organizations, sso, sso-oidc,
+bedrock, bedrock-runtime) plus `yaml` (run-state serialization). `src/cli.ts`
 is the orchestrator; each other file is one seam:
 
 - **`cli.ts`** — arg dispatch and the five command handlers (`request` default,
@@ -81,6 +82,10 @@ is the orchestrator; each other file is one seam:
   need no preconfigured AWS profiles — just `--start-url`. Caches the access
   token under `~/.bqi/sso-cache/` (mode 0600). `getAccountCredentials` fetches
   per-account temporary creds, defaulting to the account's first available role.
+  A `--role` is normalized by `permissionSetName`/`matchRole` so the user may
+  pass the permission-set name from the SSO console, the `AWSReservedSSO_…`
+  provisioned role name, or a full role ARN — all resolve to the SSO
+  permission-set name `GetRoleCredentials` needs.
 - **`quotas.ts`** — AWS Service Quotas wrapper (the primary request path).
   Lists Bedrock quotas, **fuzzy-matches** them to the model + dimension
   (`rankCandidates`), submits `RequestServiceQuotaIncrease`, and refreshes /
@@ -115,6 +120,9 @@ is the orchestrator; each other file is one seam:
   honored via `resolveModel`'s fallback.
 - **`manifest.ts`** — run identity and local state; `QuotaRequestRecord` per
   requested dimension, with backward-compat for legacy per-account cases.
+  Persists each run as a YAML file in the working directory (`bqi-run-<id>.yaml`
+  via `defaultStatePath`; `saveManifest`/`loadManifest` take a file path,
+  `listRuns` scans the dir) so the state is easy to share/commit.
 - **`ui.ts`** — zero-dependency color/logging + interactive prompts.
 
 ### Two invariants that hold the design together
@@ -131,13 +139,21 @@ is the orchestrator; each other file is one seam:
    `runIdFromSubject`'s regex.
 
 2. **Dual-layer run tracking.** A run is recorded both in the marker
-   (server-side, machine-independent) and in a local JSON manifest at
-   `~/.bqi/runs/<id>.json`. `list`/`comment`/`close` prefer the local manifest
-   and fall back to marker-based discovery. The manifest is re-saved **after
-   every account** (and after each quota within an account) in the `request`
-   loop, so an interruption still leaves an actionable manifest. Service Quotas
-   sometimes returns the backing `CaseId` only after a delay, so `list`/`comment`/
-   `close` refresh pending requests (`refreshPendingCaseIds`) to fill it in.
+   (server-side, machine-independent) and in a local **YAML manifest written to
+   the current working directory** as `bqi-run-<id>.yaml` (overridable with
+   `--state-file`; path resolved by `statePathFor` in `cli.ts` /
+   `defaultStatePath` in `manifest.ts`). YAML + a visible, commit-friendly
+   location is deliberate: the file is meant to be shared/committed to hand a run
+   off. `saveManifest`/`loadManifest` take an explicit file path; `listRuns`
+   scans the working directory for `bqi-run-*.yaml` (that's the pool the run
+   picker and `runs` draw from). `list`/`comment`/`close` prefer the local file
+   (via `--run`, `--state-file`, or the picker) and fall back to marker-based
+   discovery. The file is re-saved **after every account** (and after each quota
+   within an account) in the `request` loop, so an interruption still leaves an
+   actionable file. Service Quotas sometimes returns the backing `CaseId` only
+   after a delay, so `list`/`comment`/`close` refresh pending requests
+   (`refreshPendingCaseIds`) to fill it in. (The SSO access token is still cached
+   under `~/.bqi/sso-cache/`; only run state moved to the working directory.)
 
 ### stdout vs stderr contract
 

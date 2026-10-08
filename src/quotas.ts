@@ -170,6 +170,18 @@ function scoreModelMatch(name: string, model: BedrockModel, tokens: string[]): n
   }
   if (matched === 0) return 0;
 
+  // Family gate: the model family word ("haiku"/"sonnet"/"opus"/"nova"…) is a
+  // HARD requirement, not just a +1 nudge. Different families share a version
+  // ("Claude Haiku 5.5" vs "Claude Opus 5.5"), so a version-only match plus the
+  // scope bonus (+2, below) can outscore the correct family in a less-preferred
+  // scope — silently landing a Haiku request on Opus's quota. Requiring at least
+  // one non-version model token to appear in the name confines scoring to the
+  // right model, so scope only ever reorders quotas of that same model.
+  const familyTokens = tokens.filter((t) => !isVersionToken(t));
+  if (familyTokens.length && !familyTokens.some((f) => nameTokens.has(f))) {
+    return 0;
+  }
+
   // Version gate: the version number is the real discriminator between model
   // generations. If BOTH the model and the quota name carry a version, reject
   // the candidate unless the versions are compatible — otherwise a same-family

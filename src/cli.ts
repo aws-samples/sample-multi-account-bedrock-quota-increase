@@ -45,7 +45,7 @@ import {
 } from "./quotas.js";
 import {
   newRunId, markerFor, saveManifest, loadManifest, listRuns, caseBreakdown,
-  manifestCases, mergeCaseStates,
+  manifestCases, mergeCaseStates, defaultStatePath,
   type RunManifest, type CaseRecord, type CaseBreakdown,
   type QuotaRequestRecord, type CaseState,
 } from "./manifest.js";
@@ -85,9 +85,14 @@ ${c.bold("REQUEST OPTIONS")}
                           ${c.dim("(skips fuzzy matching; e.g. L-1234ABCD)")}
   --justification <text>  Business justification (used on the marker comment / fallback case)
   --body-file <path>      Read the justification/comment from a file (e.g. a .md file)
-  --role <name>           SSO role to assume in each account (default: first available)
+  --role <role>           SSO role to assume in each account ${c.dim("(default: first available)")}.
+                          Accepts the permission-set name from the AWS access portal
+                          (e.g. AdministratorAccess), its AWSReservedSSO_… role name,
+                          or the full role ARN.
   --region <region>       Bedrock target region        ${c.dim("(default: us-east-1)")}
   --sso-region <region>   Region of the SSO instance    ${c.dim("(default: us-east-1)")}
+  --state-file <path>     Where to write this run's YAML state ${c.dim("(default: ./bqi-run-<id>.yaml)")}.
+                          Share or commit the file to hand the run off to a teammate.
   --rpm <n>               Requested requests-per-minute
   --tpm <n>               Requested combined tokens-per-minute (older models with a single TPM quota)
   --input-tpm <n>         Requested input tokens-per-minute  (newer models with split quotas)
@@ -100,7 +105,10 @@ ${c.bold("REQUEST OPTIONS")}
   --yes                   Skip confirmation prompts (uses the top-ranked quota match)
 
 ${c.bold("LIST / COMMENT / CLOSE OPTIONS")}
-  --run <runId>           The run to act on (interactive picker if omitted)
+  --run <runId>           The run to act on ${c.dim("(reads ./bqi-run-<id>.yaml; interactive picker over")}
+                          ${c.dim("bqi-run-*.yaml in this directory if omitted)")}
+  --state-file <path>     Read the run's state straight from this YAML file ${c.dim("(e.g. a file a")}
+                          ${c.dim("teammate shared); overrides --run")}
   --start-url <url>       SSO start URL ${c.dim("(required for comment/close; optional for list — refreshes live case state)")}
   --body <text>           Comment text            ${c.dim("(comment command)")}
   --body-file <path>      Read the comment text from a file ${c.dim("(comment command)")}
@@ -131,21 +139,35 @@ function resolveRunId(
   flags: Record<string, string | boolean>,
   onlyOpen = false,
 ): Promise<string> {
+  // An explicit --state-file points straight at one run's YAML; read its id.
+  const stateFile = flagStr(flags, "state-file");
+  if (stateFile) {
+    const m = loadManifest(stateFile);
+    if (!m) fail(`Could not read a run from --state-file "${stateFile}".`);
+    return Promise.resolve(m!.runId);
+  }
+
   const explicit = flagStr(flags, "run");
   if (explicit) return Promise.resolve(explicit);
 
   const runs = listRuns();
   if (runs.length === 0) {
-    fail("No --run given and no runs are recorded on this machine. Pass --run <runId>.");
+    fail(`No --run given and no ${c.dim("bqi-run-*.yaml")} files found in this directory. Pass --run <runId>, --state-file <path>, or cd to where the run file lives.`);
   }
   const shown = onlyOpen ? runs.filter((r) => caseBreakdown(r.cases).open > 0) : runs;
   if (shown.length === 0) {
-    fail("No runs with open cases were found on this machine. Pass --run <runId> to act on a specific run anyway.");
+    fail("No runs with open cases were found in this directory. Pass --run <runId> to act on a specific run anyway.");
   }
   return selectArrow("Select a run:", shown, (r) => {
     const b = caseBreakdown(r.cases);
     return `${r.runId}  ${c.dim(r.createdAt)}  ${r.llm}  ${c.dim("[")}${formatBreakdown(b)}${c.dim("]")}`;
   }).then((r) => r.runId);
+}
+
+// The YAML file a run's state lives in: the explicit --state-file if given, else
+// bqi-run-<runId>.yaml in the current working directory.
+function statePathFor(flags: Record<string, string | boolean>, runId: string): string {
+  return flagStr(flags, "state-file") || defaultStatePath(runId);
 }
 
 // Resolve a chunk of text that can be supplied either inline (--<inlineFlag>) or
@@ -510,6 +532,7 @@ async function cmdRequest(flags: Record<string, string | boolean>): Promise<void
   const modelNeedsSub = requiresSubscription(model);
   const fmId = foundationModelIdFor(model);
   const runId = newRunId(Date.now());
+  const stateFile = statePathFor(flags, runId);
 
   const actionLabel = doSubscribe && doRequest ? "subscribe + submit quota increase"
     : doSubscribe ? "subscribe only"
@@ -525,6 +548,7 @@ async function cmdRequest(flags: Record<string, string | boolean>): Promise<void
   log.plain(`${c.bold("Accounts:")}   ${accounts.length} → ${accounts.map(label).join(", ")}`);
   log.plain(`${c.bold("Actions:")}    ${actionLabel}`);
   if (doRequest) log.plain(`${c.bold("Marker:")}     ${markerFor(runId)}`);
+  log.plain(`${c.bold("State:")}      ${stateFile} ${c.dim("(share or commit this file to share the run)")}`);
   log.plain("");
 
   if (dryRun) {
@@ -619,7 +643,7 @@ async function cmdRequest(flags: Record<string, string | boolean>): Promise<void
       record.error = msg;
       if (doSubscribe) { record.subscription = "failed"; record.subscriptionError = msg; }
       log.err(`Account ${label(accountId)}: ${msg}`);
-      saveManifest(manifest);
+      saveManifest(manifest, stateFile);
       continue;
     }
 
@@ -643,18 +667,18 @@ async function cmdRequest(flags: Record<string, string | boolean>): Promise<void
           log.ok(`Account ${label(accountId)}: invoked ${fmId} ${c.dim(`via ${sub.invokedVia}`)}`);
         }
       }
-      saveManifest(manifest);
+      saveManifest(manifest, stateFile);
     }
 
     // Step 2: submit the quota increases.
     if (doRequest) {
       await submitQuotaRequests(
         accountId, label(accountId), credentials, region, model, quotas, quotaTargets, justification,
-        ccEmails, runId, record, manifest, startUrl, record.roleName,
+        ccEmails, runId, record, manifest, stateFile, startUrl, record.roleName,
       );
     }
 
-    saveManifest(manifest);
+    saveManifest(manifest, stateFile);
   }
 
   // Report subscription outcomes (only meaningful when we attempted them).
@@ -678,7 +702,7 @@ async function cmdRequest(flags: Record<string, string | boolean>): Promise<void
     // to open (filling in their caseIds), then post the batch comment — which
     // carries the business justification (Service Quotas gives no way to attach
     // one to the cases it opens) and links to every sibling case in the run.
-    await waitForPendingCaseIds(manifest, accessToken, ssoRegion, role);
+    await waitForPendingCaseIds(manifest, accessToken, ssoRegion, role, stateFile);
     await postCrossReferenceComments(manifest, model, region, accessToken, ssoRegion, role, justification, startUrl);
 
     // List every backing case with its access-portal shortcut so the operator
@@ -687,9 +711,10 @@ async function cmdRequest(flags: Record<string, string | boolean>): Promise<void
     logRunCaseShortcuts(manifest, startUrl);
 
     const roleHint = role ? ` --role ${role}` : "";
-    log.plain(`Manifest saved. Act on this run later with:`);
-    log.plain(`  ${c.cyan(`${INVOKE} list  --run ${runId} --start-url ${startUrl}${roleHint}`)}`);
-    log.plain(`  ${c.cyan(`${INVOKE} close --run ${runId} --start-url ${startUrl}${roleHint}`)}`);
+    const stateHint = flagStr(flags, "state-file") ? ` --state-file ${stateFile}` : "";
+    log.plain(`State written to ${c.cyan(stateFile)} — share or commit it to hand off this run. Act on it later with:`);
+    log.plain(`  ${c.cyan(`${INVOKE} list  --run ${runId} --start-url ${startUrl}${roleHint}${stateHint}`)}`);
+    log.plain(`  ${c.cyan(`${INVOKE} close --run ${runId} --start-url ${startUrl}${roleHint}${stateHint}`)}`);
   }
   out(runId);
 }
@@ -710,6 +735,7 @@ async function submitQuotaRequests(
   runId: string,
   record: CaseRecord,
   manifest: RunManifest,
+  stateFile: string,
   startUrl: string,
   roleName: string | undefined,
 ): Promise<void> {
@@ -764,7 +790,7 @@ async function submitQuotaRequests(
         log.err(`Account ${accountLabel}: ${DIMENSION_LABEL[t.dimension]} — ${rec.error}`);
       }
     }
-    saveManifest(manifest);
+    saveManifest(manifest, stateFile);
   }
 
   // Open (at most) one fallback case for all non-adjustable dimensions.
@@ -801,7 +827,7 @@ async function submitQuotaRequests(
         if (!fallbackCaseId) rec.error = "fallback support case creation failed";
       }
     }
-    saveManifest(manifest);
+    saveManifest(manifest, stateFile);
   }
 }
 
@@ -875,10 +901,11 @@ async function resolveRunCases(
   ssoRegion: string,
   role: string | undefined,
 ): Promise<ResolvedCase[]> {
-  const manifest = loadManifest(runId);
+  const stateFile = statePathFor(flags, runId);
+  const manifest = loadManifest(stateFile);
 
   if (manifest) {
-    await refreshPendingCaseIds(manifest, accessToken, ssoRegion, role);
+    await refreshPendingCaseIds(manifest, accessToken, ssoRegion, role, stateFile);
     const cases = manifestCases(manifest);
     if (cases.length) return cases;
   }
@@ -935,6 +962,7 @@ async function refreshPendingCaseIds(
   accessToken: string,
   ssoRegion: string,
   role: string | undefined,
+  stateFile: string,
 ): Promise<void> {
   const marker = markerFor(manifest.runId);
   let changed = false;
@@ -966,7 +994,7 @@ async function refreshPendingCaseIds(
     }
   }
   void marker;
-  if (changed) saveManifest(manifest);
+  if (changed) saveManifest(manifest, stateFile);
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -982,6 +1010,7 @@ async function waitForPendingCaseIds(
   accessToken: string,
   ssoRegion: string,
   role: string | undefined,
+  stateFile: string,
 ): Promise<void> {
   const MAX_POLLS = 15;
   const INTERVAL_MS = 20_000;
@@ -989,7 +1018,7 @@ async function waitForPendingCaseIds(
   log.step("Waiting for AWS to open the backing support case(s) so the justification can be posted…");
   for (let i = 0; i < MAX_POLLS && hasPendingCaseIds(manifest); i++) {
     await sleep(INTERVAL_MS);
-    await refreshPendingCaseIds(manifest, accessToken, ssoRegion, role);
+    await refreshPendingCaseIds(manifest, accessToken, ssoRegion, role, stateFile);
   }
   if (hasPendingCaseIds(manifest)) {
     log.warn("Some cases haven't opened yet, so the justification comment can't be posted on them.");
@@ -1012,6 +1041,7 @@ async function reconcileCaseStates(
   ssoRegion: string,
   role: string | undefined,
   now: string,
+  stateFile: string,
 ): Promise<Map<QuotaRequestRecord, CaseState>> {
   const out = new Map<QuotaRequestRecord, CaseState>();
   let changed = false;
@@ -1049,7 +1079,7 @@ async function reconcileCaseStates(
       log.warn(`Account ${rec.accountId}: could not fetch case state — ${e?.message || e}`);
     }
   }
-  if (changed) saveManifest(manifest);
+  if (changed) saveManifest(manifest, stateFile);
   return out;
 }
 
@@ -1137,7 +1167,8 @@ async function caseDisplayId(support: ReturnType<typeof supportClient>, caseId: 
 // ── list ─────────────────────────────────────────────────────────────────────
 async function cmdList(flags: Record<string, string | boolean>): Promise<void> {
   const runId = await resolveRunId(flags);
-  const manifest = loadManifest(runId);
+  const stateFile = statePathFor(flags, runId);
+  const manifest = loadManifest(stateFile);
   if (manifest) {
     // With --start-url we log in once to (1) fill in any pending case IDs and
     // (2) reconcile each request's live AWS-side state (pending / resolved) back
@@ -1152,9 +1183,9 @@ async function cmdList(flags: Record<string, string | boolean>): Promise<void> {
       try {
         const accessToken = await login(startUrl, ssoRegion);
         if (hasPendingCaseIds(manifest)) {
-          await refreshPendingCaseIds(manifest, accessToken, ssoRegion, role);
+          await refreshPendingCaseIds(manifest, accessToken, ssoRegion, role, stateFile);
         }
-        liveStates = await reconcileCaseStates(manifest, accessToken, ssoRegion, role, new Date().toISOString());
+        liveStates = await reconcileCaseStates(manifest, accessToken, ssoRegion, role, new Date().toISOString(), stateFile);
       } catch (e: any) {
         log.warn(`Could not refresh from AWS: ${e?.message || e}`);
       }
@@ -1274,7 +1305,8 @@ async function cmdClose(flags: Record<string, string | boolean>): Promise<void> 
 
   // Reload the manifest so we can stamp resolvedAt on each case we close; this
   // keeps the open/closed breakdown accurate for `runs` and `list`.
-  const manifest = loadManifest(runId);
+  const stateFile = statePathFor(flags, runId);
+  const manifest = loadManifest(stateFile);
   const nowIso = new Date().toISOString();
 
   let done = 0;
@@ -1294,7 +1326,7 @@ async function cmdClose(flags: Record<string, string | boolean>): Promise<void> 
       log.err(`Account ${cs.accountId}: ${e?.message || e}`);
     }
   }
-  if (manifest) saveManifest(manifest);
+  if (manifest) saveManifest(manifest, stateFile);
   log.ok(`Resolved ${done}/${cases.length} case(s).`);
 }
 
@@ -1335,7 +1367,7 @@ function formatSubscription(status: CaseRecord["subscription"]): string {
 // ── runs ──────────────────────────────────────────────────────────────────────
 function cmdRuns(): void {
   const runs = listRuns();
-  if (!runs.length) { log.warn("No runs recorded on this machine."); return; }
+  if (!runs.length) { log.warn(`No ${c.dim("bqi-run-*.yaml")} files found in this directory.`); return; }
   for (const r of runs) {
     const b = caseBreakdown(r.cases);
     log.plain(`  ${c.bold(r.runId)}  ${c.dim(r.createdAt)}  ${r.llm}`);

@@ -10,13 +10,18 @@
 //      comment (Service Quotas owns the case subject) and, for cases this tool
 //      opens itself, the subject too. Discoverable through the AWS Support API
 //      from any machine.
-//   2. A local JSON manifest under ~/.bqi/runs/<runId>.json — fast, offline,
-//      and remembers which account and quota each request belongs to.
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+//   2. A local YAML manifest written to the CURRENT WORKING DIRECTORY as
+//      bqi-run-<runId>.yaml (overridable with --state-file). YAML + a visible,
+//      checked-into-the-repo-friendly location means a customer can hand the
+//      file to a teammate — or commit it — to share exactly which quota
+//      increases a run requested. Fast and offline for list/comment/close.
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
-const RUNS_DIR = join(homedir(), ".bqi", "runs");
+// Run manifests are written to the working directory with this prefix so they
+// sit alongside the project and are easy to share/commit.
+export const STATE_FILE_PREFIX = "bqi-run-";
+const STATE_FILE_SUFFIX = ".yaml";
 
 export const MARKER_PREFIX = "bqi:run=";
 
@@ -192,32 +197,42 @@ export function newRunId(now: number): string {
   return `${iso}-${rand}`;
 }
 
-function runPath(runId: string): string {
-  return join(RUNS_DIR, `${runId}.json`);
+// The default manifest path for a run: bqi-run-<runId>.yaml in `dir` (the
+// current working directory unless a caller overrides it). Used whenever the
+// user didn't pass an explicit --state-file.
+export function defaultStatePath(runId: string, dir: string = process.cwd()): string {
+  return `${dir.replace(/\/+$/, "")}/${STATE_FILE_PREFIX}${runId}${STATE_FILE_SUFFIX}`;
 }
 
-export function saveManifest(m: RunManifest): void {
-  mkdirSync(RUNS_DIR, { recursive: true });
-  writeFileSync(runPath(m.runId), JSON.stringify(m, null, 2));
+// Write the manifest as YAML to `file`. The caller owns path selection
+// (--state-file or defaultStatePath) so a run's state lives wherever the user
+// can see and share it.
+export function saveManifest(m: RunManifest, file: string): void {
+  writeFileSync(file, stringifyYaml(m));
 }
 
-export function loadManifest(runId: string): RunManifest | null {
-  const p = runPath(runId);
-  if (!existsSync(p)) return null;
+// Read a manifest from an explicit YAML file path. Returns null if missing or
+// unparseable.
+export function loadManifest(file: string): RunManifest | null {
+  if (!existsSync(file)) return null;
   try {
-    return JSON.parse(readFileSync(p, "utf8")) as RunManifest;
+    return parseYaml(readFileSync(file, "utf8")) as RunManifest;
   } catch {
     return null;
   }
 }
 
-export function listRuns(): RunManifest[] {
-  if (!existsSync(RUNS_DIR)) return [];
+// Every run manifest found in `dir` (default: the working directory), newest
+// first — the files matching bqi-run-*.yaml. This is the pool the interactive
+// run picker and the `runs` command draw from.
+export function listRuns(dir: string = process.cwd()): RunManifest[] {
+  if (!existsSync(dir)) return [];
   const runs: RunManifest[] = [];
-  for (const f of readdirSync(RUNS_DIR)) {
-    if (!f.endsWith(".json")) continue;
+  for (const f of readdirSync(dir)) {
+    if (!f.startsWith(STATE_FILE_PREFIX) || !f.endsWith(STATE_FILE_SUFFIX)) continue;
     try {
-      runs.push(JSON.parse(readFileSync(join(RUNS_DIR, f), "utf8")) as RunManifest);
+      const m = parseYaml(readFileSync(`${dir.replace(/\/+$/, "")}/${f}`, "utf8")) as RunManifest;
+      if (m && m.runId) runs.push(m);
     } catch {
       // skip corrupt
     }

@@ -6,5 +6,10 @@ dist/
 
 tmp
 
+# Run-state files this tool writes to the working directory. Ignored here so
+# local dev/test runs don't get committed to the tool's own repo; downstream
+# users decide whether to commit their own bqi-run-*.yaml to share a run.
+bqi-run-*.yaml
+
 # Internal-only notes — never publish
 CLAUDE.private.md

@@ -26,7 +26,8 @@
     "@aws-sdk/client-service-quotas": "^3.1098.0",
     "@aws-sdk/client-sso": "^3.600.0",
     "@aws-sdk/client-sso-oidc": "^3.600.0",
-    "@aws-sdk/client-support": "^3.600.0"
+    "@aws-sdk/client-support": "^3.600.0",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

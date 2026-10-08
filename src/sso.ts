@@ -153,8 +153,50 @@ export async function listAccounts(accessToken: string, region: string): Promise
   return accounts;
 }
 
+// Reduce whatever the user passed for a role down to the bare SSO
+// permission-set name that GetRoleCredentials expects (the name shown in the
+// AWS access portal, e.g. "AdministratorAccess"). Accepts three forms:
+//   • the permission-set name itself          → "AdministratorAccess"
+//   • the provisioned IAM role name           → "AWSReservedSSO_AdministratorAccess_1a2b3c4d"
+//   • the full IAM role ARN                    → "arn:aws:iam::…:role/aws-reserved/
+//                                                 sso.amazonaws.com/…/AWSReservedSSO_…_…"
+// For an ARN (or any slash path) we take the final segment, then peel the
+// "AWSReservedSSO_<name>_<suffix>" wrapper SSO adds to the provisioned role.
+// The random suffix never contains "_", so splitting on the LAST "_" recovers
+// permission-set names that themselves contain underscores.
+export function permissionSetName(input: string): string {
+  const leaf = input.includes("/") ? input.slice(input.lastIndexOf("/") + 1) : input;
+  const m = leaf.match(/^AWSReservedSSO_(.+)_[^_]+$/);
+  return m ? m[1]! : leaf;
+}
+
+// Match the user's --role input against the permission-set names actually
+// available in the account. Tries an exact match on the raw input first (handles
+// a plain permission-set name), then on the normalized name, then
+// case-insensitively. Returns undefined if nothing matches.
+function matchRole(input: string, available: string[]): string | undefined {
+  if (available.includes(input)) return input;
+  const normalized = permissionSetName(input);
+  if (available.includes(normalized)) return normalized;
+  const lc = normalized.toLowerCase();
+  return available.find((r) => r.toLowerCase() === lc);
+}
+
+async function listAccountRoleNames(sso: SSOClient, accessToken: string, accountId: string): Promise<string[]> {
+  const roles: string[] = [];
+  let nextToken: string | undefined;
+  do {
+    const res = await sso.send(new ListAccountRolesCommand({ accessToken, accountId, nextToken }));
+    for (const r of res.roleList || []) if (r.roleName) roles.push(r.roleName);
+    nextToken = res.nextToken;
+  } while (nextToken);
+  return roles;
+}
+
 // Resolve temporary credentials for a specific account, picking a role. If
-// `preferredRole` is set we use it; otherwise we use the account's first role.
+// `preferredRole` is set we normalize it (ARN / provisioned role name / portal
+// name all accepted) and match it against the account's roles; otherwise we use
+// the account's first role.
 export async function getAccountCredentials(
   accessToken: string,
   region: string,
@@ -162,18 +204,22 @@ export async function getAccountCredentials(
   preferredRole?: string,
 ): Promise<AccountCredentials> {
   const sso = new SSOClient({ region });
-  let roleName = preferredRole;
+  const available = await listAccountRoleNames(sso, accessToken, accountId);
+  if (available.length === 0) throw new Error(`No roles available in account ${accountId}.`);
 
-  if (!roleName) {
-    const roles: string[] = [];
-    let nextToken: string | undefined;
-    do {
-      const res = await sso.send(new ListAccountRolesCommand({ accessToken, accountId, nextToken }));
-      for (const r of res.roleList || []) if (r.roleName) roles.push(r.roleName);
-      nextToken = res.nextToken;
-    } while (nextToken);
-    if (roles.length === 0) throw new Error(`No roles available in account ${accountId}.`);
-    roleName = roles[0]!;
+  let roleName: string;
+  if (preferredRole) {
+    const matched = matchRole(preferredRole, available);
+    if (!matched) {
+      throw new Error(
+        `Role "${preferredRole}" is not available in account ${accountId}. `
+        + `Available: ${available.join(", ")}. Pass the permission-set name shown in the AWS access `
+        + `portal, its AWSReservedSSO_… role name, or the full role ARN.`,
+      );
+    }
+    roleName = matched;
+  } else {
+    roleName = available[0]!;
   }
 
   const res = await sso.send(new GetRoleCredentialsCommand({ accessToken, accountId, roleName }));
