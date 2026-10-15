@@ -91,8 +91,8 @@ ${c.bold("REQUEST OPTIONS")}
                           or the full role ARN.
   --region <region>       Bedrock target region        ${c.dim("(default: us-east-1)")}
   --sso-region <region>   Region of the SSO instance    ${c.dim("(default: us-east-1)")}
-  --state-file <path>     Where to write this run's YAML state ${c.dim("(default: ./bqi-run-<id>.yaml)")}.
-                          Share or commit the file to hand the run off to a teammate.
+  --state-file <path>     Where to write this run's YAML state ${c.dim("(default: ~/.bqi/runs/bqi-run-<id>.yaml)")}.
+                          Share the file to hand the run off to a teammate.
   --rpm <n>               Requested requests-per-minute
   --tpm <n>               Requested combined tokens-per-minute (older models with a single TPM quota)
   --input-tpm <n>         Requested input tokens-per-minute  (newer models with split quotas)
@@ -105,8 +105,8 @@ ${c.bold("REQUEST OPTIONS")}
   --yes                   Skip confirmation prompts (uses the top-ranked quota match)
 
 ${c.bold("LIST / COMMENT / CLOSE OPTIONS")}
-  --run <runId>           The run to act on ${c.dim("(reads ./bqi-run-<id>.yaml; interactive picker over")}
-                          ${c.dim("bqi-run-*.yaml in this directory if omitted)")}
+  --run <runId>           The run to act on ${c.dim("(reads ~/.bqi/runs/bqi-run-<id>.yaml; interactive")}
+                          ${c.dim("picker over the runs in ~/.bqi/runs if omitted)")}
   --state-file <path>     Read the run's state straight from this YAML file ${c.dim("(e.g. a file a")}
                           ${c.dim("teammate shared); overrides --run")}
   --start-url <url>       SSO start URL ${c.dim("(required for comment/close; optional for list — refreshes live case state)")}
@@ -152,11 +152,11 @@ function resolveRunId(
 
   const runs = listRuns();
   if (runs.length === 0) {
-    fail(`No --run given and no ${c.dim("bqi-run-*.yaml")} files found in this directory. Pass --run <runId>, --state-file <path>, or cd to where the run file lives.`);
+    fail(`No --run given and no runs found in ${c.dim("~/.bqi/runs")}. Pass --run <runId> or --state-file <path>.`);
   }
   const shown = onlyOpen ? runs.filter((r) => caseBreakdown(r.cases).open > 0) : runs;
   if (shown.length === 0) {
-    fail("No runs with open cases were found in this directory. Pass --run <runId> to act on a specific run anyway.");
+    fail("No runs with open cases were found in ~/.bqi/runs. Pass --run <runId> to act on a specific run anyway.");
   }
   return selectArrow("Select a run:", shown, (r) => {
     const b = caseBreakdown(r.cases);
@@ -165,9 +165,33 @@ function resolveRunId(
 }
 
 // The YAML file a run's state lives in: the explicit --state-file if given, else
-// bqi-run-<runId>.yaml in the current working directory.
+// bqi-run-<runId>.yaml under ~/.bqi/runs.
 function statePathFor(flags: Record<string, string | boolean>, runId: string): string {
   return flagStr(flags, "state-file") || defaultStatePath(runId);
+}
+
+// The commented block written at the top of a run's YAML file: the ready-to-run
+// commands to comment on or close every case in the run, so whoever opens the
+// file has the follow-up actions in hand. Written once by `request`; the
+// manifest's incremental re-saves preserve it (see saveManifest).
+function stateFileHeader(
+  flags: Record<string, string | boolean>,
+  runId: string,
+  startUrl: string,
+  role: string | undefined,
+): string[] {
+  const roleHint = role ? ` --role ${role}` : "";
+  const stateHint = flagStr(flags, "state-file") ? ` --state-file ${statePathFor(flags, runId)}` : "";
+  const tail = `--run ${runId} --start-url ${startUrl}${roleHint}${stateHint}`;
+  return [
+    `bqi run ${runId}`,
+    "",
+    "Comment on every case in this run:",
+    `  ${INVOKE} comment ${tail} --body "your message"`,
+    "",
+    "Close every case in this run:",
+    `  ${INVOKE} close ${tail}`,
+  ];
 }
 
 // Resolve a chunk of text that can be supplied either inline (--<inlineFlag>) or
@@ -548,7 +572,7 @@ async function cmdRequest(flags: Record<string, string | boolean>): Promise<void
   log.plain(`${c.bold("Accounts:")}   ${accounts.length} → ${accounts.map(label).join(", ")}`);
   log.plain(`${c.bold("Actions:")}    ${actionLabel}`);
   if (doRequest) log.plain(`${c.bold("Marker:")}     ${markerFor(runId)}`);
-  log.plain(`${c.bold("State:")}      ${stateFile} ${c.dim("(share or commit this file to share the run)")}`);
+  log.plain(`${c.bold("State:")}      ${stateFile} ${c.dim("(share this file to hand off the run)")}`);
   log.plain("");
 
   if (dryRun) {
@@ -622,6 +646,12 @@ async function cmdRequest(flags: Record<string, string | boolean>): Promise<void
     await reviewQuotaTargets(resolved, accounts.length, flagBool(flags, "yes"));
     quotaTargets = resolved.map((r) => r.target);
   }
+
+  // Write the file once up front with its comment-block header (the comment/
+  // close commands for this run). Only the request path opens cases, so the
+  // header's follow-up commands only make sense there; subscribe-only runs get a
+  // plain file. Every later save preserves whatever header is already present.
+  saveManifest(manifest, stateFile, doRequest ? stateFileHeader(flags, runId, startUrl, role) : undefined);
 
   for (const accountId of accounts) {
     const record: CaseRecord = {
@@ -707,12 +737,15 @@ async function cmdRequest(flags: Record<string, string | boolean>): Promise<void
 
     // List every backing case with its access-portal shortcut so the operator
     // can click straight in. Cases that haven't opened yet (no displayId) are
-    // noted without a link.
+    // noted without a link. Persist those same links onto the manifest so the
+    // saved YAML file carries a click-through link per case too.
     logRunCaseShortcuts(manifest, startUrl);
+    populateShortcutUrls(manifest, startUrl);
+    saveManifest(manifest, stateFile);
 
     const roleHint = role ? ` --role ${role}` : "";
     const stateHint = flagStr(flags, "state-file") ? ` --state-file ${stateFile}` : "";
-    log.plain(`State written to ${c.cyan(stateFile)} — share or commit it to hand off this run. Act on it later with:`);
+    log.plain(`State written to ${c.cyan(stateFile)} ${c.dim("(the file's header carries these commands too)")} — share it to hand off this run. Act on it later with:`);
     log.plain(`  ${c.cyan(`${INVOKE} list  --run ${runId} --start-url ${startUrl}${roleHint}${stateHint}`)}`);
     log.plain(`  ${c.cyan(`${INVOKE} close --run ${runId} --start-url ${startUrl}${roleHint}${stateHint}`)}`);
   }
@@ -906,6 +939,9 @@ async function resolveRunCases(
 
   if (manifest) {
     await refreshPendingCaseIds(manifest, accessToken, ssoRegion, role, stateFile);
+    // A case's displayId may only have been filled in by the refresh above, so
+    // (re)build the per-case shortcut links and persist them if they changed.
+    if (populateShortcutUrls(manifest, flagStr(flags, "start-url"))) saveManifest(manifest, stateFile);
     const cases = manifestCases(manifest);
     if (cases.length) return cases;
   }
@@ -1142,6 +1178,27 @@ function logRunCaseShortcuts(manifest: RunManifest, startUrl: string): void {
   }
 }
 
+// Record the access-portal shortcut URL on every backing case we can build one
+// for — needs the run's start-url, the SSO role we assumed for the account, and
+// the case's numeric display id. Stored on each QuotaRequestRecord so the saved
+// YAML carries a click-through link per case, not just in the console log.
+// Returns whether anything changed, so the caller can skip a redundant save.
+function populateShortcutUrls(manifest: RunManifest, startUrl: string | undefined): boolean {
+  if (!startUrl) return false;
+  let changed = false;
+  for (const rec of manifest.cases) {
+    if (!rec.roleName) continue;
+    for (const q of rec.quotaRequests || []) {
+      if (!q.displayId) continue;
+      const url = buildSsoShortcutUrl({
+        startUrl, accountId: rec.accountId, roleName: rec.roleName, displayId: q.displayId,
+      });
+      if (q.shortcutUrl !== url) { q.shortcutUrl = url; changed = true; }
+    }
+  }
+  return changed;
+}
+
 // The numeric display id recorded in the manifest for a given internal case id,
 // if any request captured it. Lets `close` build the shortcut without an extra
 // DescribeCases call when the manifest already knows the display id.
@@ -1367,7 +1424,7 @@ function formatSubscription(status: CaseRecord["subscription"]): string {
 // ── runs ──────────────────────────────────────────────────────────────────────
 function cmdRuns(): void {
   const runs = listRuns();
-  if (!runs.length) { log.warn(`No ${c.dim("bqi-run-*.yaml")} files found in this directory.`); return; }
+  if (!runs.length) { log.warn(`No runs found in ${c.dim("~/.bqi/runs")}.`); return; }
   for (const r of runs) {
     const b = caseBreakdown(r.cases);
     log.plain(`  ${c.bold(r.runId)}  ${c.dim(r.createdAt)}  ${r.llm}`);

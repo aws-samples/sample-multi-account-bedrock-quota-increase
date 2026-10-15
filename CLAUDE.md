@@ -107,7 +107,10 @@ is the orchestrator; each other file is one seam:
   (`buildSsoShortcutUrl`: `<start-url>/#/console?account_id=…&role_name=…&destination=…`),
   which `request`/`list`/`close` print so an operator can click straight into the
   backing case (needs the run's `--start-url`, the SSO role used, and the case's
-  numeric display id — any missing piece suppresses the link), and the
+  numeric display id — any missing piece suppresses the link). The same link is
+  also persisted onto each `QuotaRequestRecord.shortcutUrl` (`populateShortcutUrls`
+  in `cli.ts`), so the saved YAML is a click-through index of the run's cases.
+  `caseBody.ts` also builds the
   end-of-run **batch comment** (`buildCrossReferenceComment`) posted onto every
   case in a run. That comment carries the business `--justification` (Service
   Quotas exposes no field to attach one to the cases it opens, so on the
@@ -120,9 +123,13 @@ is the orchestrator; each other file is one seam:
   honored via `resolveModel`'s fallback.
 - **`manifest.ts`** — run identity and local state; `QuotaRequestRecord` per
   requested dimension, with backward-compat for legacy per-account cases.
-  Persists each run as a YAML file in the working directory (`bqi-run-<id>.yaml`
-  via `defaultStatePath`; `saveManifest`/`loadManifest` take a file path,
-  `listRuns` scans the dir) so the state is easy to share/commit.
+  Persists each run as a YAML file under `~/.bqi/runs/` (`RUNS_DIR`) as
+  `bqi-run-<id>.yaml` (via `defaultStatePath`; `saveManifest`/`loadManifest`
+  take a file path, `listRuns` scans the dir) so every run on the machine is
+  easy to find and share. `saveManifest` takes an optional `header` (comment
+  lines prepended as `#` to the YAML); when omitted it preserves the comment
+  block already atop the file, so the run's `comment`/`close` commands (written
+  once by `request`) survive the incremental re-saves.
 - **`ui.ts`** — zero-dependency color/logging + interactive prompts.
 
 ### Two invariants that hold the design together
@@ -139,21 +146,24 @@ is the orchestrator; each other file is one seam:
    `runIdFromSubject`'s regex.
 
 2. **Dual-layer run tracking.** A run is recorded both in the marker
-   (server-side, machine-independent) and in a local **YAML manifest written to
-   the current working directory** as `bqi-run-<id>.yaml` (overridable with
+   (server-side, machine-independent) and in a local **YAML manifest written
+   under `~/.bqi/runs/`** as `bqi-run-<id>.yaml` (overridable with
    `--state-file`; path resolved by `statePathFor` in `cli.ts` /
-   `defaultStatePath` in `manifest.ts`). YAML + a visible, commit-friendly
-   location is deliberate: the file is meant to be shared/committed to hand a run
-   off. `saveManifest`/`loadManifest` take an explicit file path; `listRuns`
-   scans the working directory for `bqi-run-*.yaml` (that's the pool the run
-   picker and `runs` draw from). `list`/`comment`/`close` prefer the local file
-   (via `--run`, `--state-file`, or the picker) and fall back to marker-based
+   `defaultStatePath` in `manifest.ts`). A stable per-user location is
+   deliberate: every run on the machine is discoverable without cd-ing back to
+   where it was launched, and the file is still plain YAML a customer can hand
+   to a teammate. Its top-of-file comment block (`stateFileHeader` in `cli.ts`)
+   carries the ready-to-run `comment`/`close` commands for the run.
+   `saveManifest`/`loadManifest` take an explicit file path; `listRuns` scans
+   `~/.bqi/runs/` for `bqi-run-*.yaml` (that's the pool the run picker and
+   `runs` draw from). `list`/`comment`/`close` prefer the local file (via
+   `--run`, `--state-file`, or the picker) and fall back to marker-based
    discovery. The file is re-saved **after every account** (and after each quota
    within an account) in the `request` loop, so an interruption still leaves an
    actionable file. Service Quotas sometimes returns the backing `CaseId` only
    after a delay, so `list`/`comment`/`close` refresh pending requests
-   (`refreshPendingCaseIds`) to fill it in. (The SSO access token is still cached
-   under `~/.bqi/sso-cache/`; only run state moved to the working directory.)
+   (`refreshPendingCaseIds`) to fill it in. (The SSO access token is cached
+   alongside, under `~/.bqi/sso-cache/`.)
 
 ### stdout vs stderr contract
 

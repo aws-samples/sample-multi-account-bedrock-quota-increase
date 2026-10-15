@@ -6,9 +6,9 @@ dist/
 
 tmp
 
-# Run-state files this tool writes to the working directory. Ignored here so
-# local dev/test runs don't get committed to the tool's own repo; downstream
-# users decide whether to commit their own bqi-run-*.yaml to share a run.
+# Run-state files. By default the tool writes these under ~/.bqi/runs/, but a
+# run pointed into the repo with --state-file would land here — ignored so local
+# dev/test runs don't get committed to the tool's own repo.
 bqi-run-*.yaml
 
 # Internal-only notes — never publish

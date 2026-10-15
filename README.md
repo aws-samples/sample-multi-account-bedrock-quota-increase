@@ -246,7 +246,7 @@ Run `npx github:aws-samples/sample-multi-account-bedrock-quota-increase --help` 
 | `--justification <text>` | Business justification. `\n` becomes a real newline. |
 | `--body-file <path>` | Read the justification (request) or comment text (comment) from a file (e.g. a Markdown `.md` file). Wins over `--justification`/`--body` if both are given. |
 | `--role <role>` | SSO role to assume in each account. Accepts the permission-set name shown in the AWS access portal (e.g. `AdministratorAccess`), its `AWSReservedSSO_…` role name, or the full role ARN. Default: the first role available in each account. |
-| `--state-file <path>` | Where to write the run's YAML state. Default: `./bqi-run-<id>.yaml`. Share or commit it to hand the run off. |
+| `--state-file <path>` | Where to write the run's YAML state. Default: `~/.bqi/runs/bqi-run-<id>.yaml`. Share it to hand the run off. |
 | `--region <region>` | Bedrock target region referenced in the case. Default `us-east-1`. |
 | `--sso-region <region>` | Region of your Identity Center instance. Default `us-east-1`. |
 | `--rpm <n>` / `--tpm <n>` | Requested requests- / combined-tokens-per-minute (older models with a single TPM quota). |
@@ -269,10 +269,11 @@ RUN_ID=$(npx github:aws-samples/sample-multi-account-bedrock-quota-increase \
 
 Every backing case created by a run carries the `[bqi:run=<id>]` marker (in a
 comment, and in the subject too for cases this tool opens itself), and a run's
-state is saved as a YAML file in the **current working directory** —
-`./bqi-run-<id>.yaml` (override the path with `--state-file <path>`). Because
-it's plain YAML in a visible location, you can commit it to a repo or send it to
-a teammate to hand off the run. Use either the run ID or the state file:
+state is saved as a YAML file under **`~/.bqi/runs/`** —
+`~/.bqi/runs/bqi-run-<id>.yaml` (override the path with `--state-file <path>`).
+Because it's plain YAML, you can send it to a teammate to hand off the run; its
+header carries the ready-to-run `comment` and `close` commands for the run. Use
+either the run ID or the state file:
 
 ```bash
 # See the cases (offline — last-known state from the local YAML state file)
@@ -301,8 +302,8 @@ npx github:aws-samples/sample-multi-account-bedrock-quota-increase close \
   --start-url "$URL" --run "$RUN_ID" --yes
 ```
 
-If you omit `--run` from `list`, `comment`, or `close`, the tool scans the
-current directory for `bqi-run-*.yaml` files and lets you pick one with the
+If you omit `--run` from `list`, `comment`, or `close`, the tool scans
+`~/.bqi/runs/` for `bqi-run-*.yaml` files and lets you pick one with the
 **arrow keys** (↑/↓, Enter to select, Esc to cancel). `comment` and `close` list
 only runs with open cases; `list` shows them all. The `runs` command prints the
 same list non-interactively. To act on a file a teammate shared (or one in
@@ -419,11 +420,12 @@ that the case was created, received the comment, and was resolved.
 
 ## Notes & limitations
 
-- **Run state** is a YAML file written to the working directory
-  (`./bqi-run-<id>.yaml`, or wherever `--state-file` points) so it's easy to
-  share or commit. The cached SSO token still lives under `~/.bqi/`. Deleting
-  either doesn't affect any open cases; runs remain rediscoverable by their
-  `[bqi:run=<id>]` marker.
+- **Run state** is a YAML file written under `~/.bqi/runs/`
+  (`~/.bqi/runs/bqi-run-<id>.yaml`, or wherever `--state-file` points) so every
+  run on the machine is easy to find and share; its header carries the run's
+  `comment`/`close` commands. The cached SSO token lives under
+  `~/.bqi/sso-cache/`. Deleting either doesn't affect any open cases; runs
+  remain rediscoverable by their `[bqi:run=<id>]` marker.
 - The Support API endpoint is global (us-east-1); Service Quotas is regional, so
   `--region` is the region whose Bedrock quota is actually adjusted.
 - Quota values are **requests**. AWS reviews each one; this tool does not itself
